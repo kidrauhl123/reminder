@@ -17,26 +17,22 @@ Skill 使用 Hermes 原生 `cronjob` 工具，没有脚本、额外依赖或 API
 
 ## 安装
 
-使用 Hermes 从公开 URL 安装：
-
-```bash
-hermes skills install https://raw.githubusercontent.com/kidrauhl123/reminder/main/SKILL.md
-```
-
-也可以直接克隆：
+推荐克隆完整目录安装，确保 `references/cron-recipes.md` 等支持文件一起可用：
 
 ```bash
 git clone https://github.com/kidrauhl123/reminder.git ~/.hermes/skills/reminder
 ```
 
-建议在 `~/.hermes/config.yaml` 中设置：
+如果只想临时预览主文件，也可以安装 raw `SKILL.md`；但这种方式可能不会带上 `references/` 支持文件：
+
+```bash
+hermes skills install https://raw.githubusercontent.com/kidrauhl123/reminder/main/SKILL.md
+```
+
+建议确认 `~/.hermes/config.yaml` 中的时区符合你的实际使用场景，例如：
 
 ```yaml
 timezone: "Asia/Shanghai"
-
-cron:
-  wrap_response: false
-  mirror_delivery: true
 ```
 
 确保 Gateway 持续运行，否则定时任务不会触发：
@@ -57,7 +53,7 @@ hermes gateway
 /reminder 每晚十点半问我今天做成了什么
 ```
 
-Skill 创建的对话型提醒默认附着到原会话。收到提醒后，可以直接回复“完成”“推迟 10 分钟”或“取消”。
+Skill 创建的对话型提醒默认投递回创建任务的原会话。收到提醒后，可以直接回复“完成”“推迟 10 分钟”或“取消”。
 
 ## 设计取向
 

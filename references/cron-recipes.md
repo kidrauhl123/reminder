@@ -12,12 +12,11 @@
   "name": "提交材料",
   "schedule": "2026-08-22T15:00:00+08:00",
   "prompt": "你正在执行用户已安排的一次性提醒。现在是提醒时间。请提醒用户提交材料。只发一条简短中文消息，先说行动，再给一个可以立刻开始的最小动作；不要提及系统或定时任务。",
-  "skills": ["reminder"],
-  "attach_to_session": true
+  "skills": ["reminder"]
 }
 ```
 
-通常省略 `deliver`，让 Hermes 自动投递回创建任务的原会话并保留话题。不要用相对时间作为单次提醒的持久计划，以免基准时间产生误解。
+通常省略 `deliver`，让 Hermes 自动投递回创建任务的原会话并保留话题。不要使用旧字段 `attach_to_session`；当前 Hermes 的 `cronjob` schema 不需要它。不要用相对时间作为单次提醒的持久计划，以免基准时间产生误解。
 
 ## 重复提醒
 
@@ -29,8 +28,7 @@
   "name": "每日晨间启动",
   "schedule": "0 9 * * *",
   "prompt": "你正在执行用户主动设置的每日晨间启动。请用中文发一条低压力的简短消息，请用户只选出今天最重要的一件事，并建议先做一个十分钟内能完成的起步动作。不要假装知道用户今天的日程，不要创建其他任务。",
-  "skills": ["reminder"],
-  "attach_to_session": true
+  "skills": ["reminder"]
 }
 ```
 
@@ -42,8 +40,7 @@
   "name": "每日晚间回顾",
   "schedule": "30 22 * * *",
   "prompt": "你正在执行用户主动设置的每日晚间回顾。请用中文发一条不评判的简短消息，让用户用一句话回答今天完成了什么或卡在哪里；若精力不足，允许直接结束今天。不要推断完成情况，不要创建其他任务。",
-  "skills": ["reminder"],
-  "attach_to_session": true
+  "skills": ["reminder"]
 }
 ```
 
@@ -63,7 +60,7 @@ Cron 表达式使用 Hermes 配置的时区。创建前确认用户已主动要�
 先获取真实任务列表：
 
 ```json
-{"action": "list", "include_disabled": true}
+{"action": "list"}
 ```
 
 找到唯一匹配的 `job_id` 后再调用：
