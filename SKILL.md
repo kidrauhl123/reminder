@@ -51,6 +51,16 @@ metadata:
 - 可以同时保留一个临近 DDL 的轻提示，但不要用它替代开始行动提醒。
 - 提醒文案应写“现在先开始做 X 的第一步”，而不是只写“该交 X 了”。
 
+## 路线与顺手事项
+
+当提醒和“出门、上课、开会、回宿舍、拿快递、买东西”等移动场景有关时，不要把事件地点当作瞬移终点；应把步行、等电梯、找路、排队和回程视为真实时间成本。
+
+- 如果用户说“路上提醒我”“顺手”“回来/回去路上”，优先把提醒挂到真实移动节点：出门前、从 A 到 B 的路上、活动结束回程，而不是只在事件开始前固定 30 分钟。
+- 已知有地点和开始时间时，提醒文案要明确“从哪里去哪里、路上顺手做什么、关键地点/房间”。例如：从宿舍走去 AC5-陈梓红报告厅参加班会的路上，顺手去 18-2 拿快递。
+- 若顺手事项可能导致迟到，默认给出可执行兜底：去程来不及就先签到/上课，回程再做；必要时创建一个回程备用提醒。
+- 对校园/生活安排，优先复用会话中已经确定的地点、楼栋、房间号和报名状态；不要让用户重复“哪个会议室”。
+- 不要机械地把提醒设得过早。出门提醒应服务于准时和低压力：在不确定路程时保守一些，但如果用户指出“不用太早”，应改到收拾/出门节点，而不是坚持原时间。
+
 ## 模糊目标处理
 
 当用户给的是模糊目标，例如“我要开始健身”“提醒我学习”“最近生活很乱”“我要把项目推进一下”，先把目标缩成一个低阻力动作，再决定是否提醒。
@@ -61,7 +71,18 @@ metadata:
 - 不为模糊目标擅自创建长期习惯或多阶段计划；长期节奏必须由用户主动要求。
 - 提醒文案避免空泛口号，写成“现在做第一步：X”，不要只写“该努力/该自律/该学习了”。
 
-具体工具参数和提示词模板见 [Cron 调用配方](references/cron-recipes.md)。
+具体工具参数和提示词模板见 [Cron 调用配方](references/cron-recipes.md)。持久化数据库实现细节见 [Persistent reminder store notes](references/persistent-reminder-store.md)。生活日历/弱提醒 scanner 的后端模式见 [Life-calendar reminder backend notes](references/life-calendar-reminders.md)。
+
+## 持久化存储
+
+- 运行时提醒数据不要放在 skill 目录；skill 目录只放 `SKILL.md`、references、templates、scripts 等说明和辅助文件。
+- 本机默认提醒状态库：`~/.hermes/data/reminders/reminders.sqlite`。
+- 数据库用于保存提醒状态、完成/取消/推迟历史、投递目标和 cron 关联；cron 仍负责按时触发提醒。
+- 当前实现已接入 reminder-skill cron 生命周期：`skills=["reminder"]` 的 cron 创建会写入 `reminders`；pause/resume/remove/run 会追加 `reminder_events` 并同步 `paused`/`active`/`cancelled`/`done` 状态。
+- 路径按 Hermes 当前 profile/cron store 动态推导，不在代码里硬编码 `/root/.hermes`。
+- 基础表：`reminders`、`reminder_events`、`schema_meta`。
+- 智能生活日历扩展表：`life_anchors` 保存吃饭、睡眠、上课、通勤等背景锚点；`intentions` 保存健身/学习等长期意愿、弱提醒强度、每周目标和最低行动；`nudge_history` 记录每次弱提醒、用户反馈和是否完成。
+- 不要把生活锚点和意愿平铺成大量 cron；cron 只负责唤醒 scanner。scanner 读取数据库后决定提醒、轻问、推迟或沉默。
 
 ## 管理提醒
 
