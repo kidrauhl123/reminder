@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -626,6 +627,8 @@ NAMED_WINDOWS = {
 }
 DEFAULT_OPEN_WINDOWS = (("10:00", "12:00"), ("16:00", "21:30"))
 QUIET_HOURS = ("23:30", "07:30")
+CATCH_MINUTES = 22
+SKIP_DAY_PERCENT = 18
 COOLDOWN_HOURS = {
     "sent": 16,
     "accepted": 24,
@@ -709,6 +712,34 @@ def week_counts(conn: sqlite3.Connection, intention_id: str, now: datetime) -> d
     return {r["outcome"]: r["n"] for r in rows}
 
 
+def digest_int(*parts: str) -> int:
+    return int.from_bytes(hashlib.sha256("|".join(parts).encode()).digest()[:8], "big")
+
+
+def open_minutes(windows: tuple[tuple[str, str], ...]) -> list[int]:
+    quiet_s, quiet_e = parse_hhmm(QUIET_HOURS[0]), parse_hhmm(QUIET_HOURS[1])
+    minutes: list[int] = []
+    for total in range(24 * 60):
+        t = time(total // 60, total % 60)
+        if time_in_span(t, quiet_s, quiet_e):
+            continue
+        if in_windows(t, windows):
+            minutes.append(total)
+    return minutes
+
+
+def todays_slot(intention_id: str, now: datetime, windows: tuple[tuple[str, str], ...]) -> datetime | None:
+    minutes = open_minutes(windows)
+    if not minutes:
+        return None
+    pick = minutes[digest_int(now.date().isoformat(), intention_id, "slot") % len(minutes)]
+    return now.replace(hour=pick // 60, minute=pick % 60, second=0, microsecond=0)
+
+
+def skip_this_day(intention_id: str, now: datetime) -> bool:
+    return digest_int(now.date().isoformat(), intention_id, "skip") % 100 < SKIP_DAY_PERCENT
+
+
 def compose_nudge(intention: dict[str, Any]) -> str:
     title = intention["title"]
     mini = intention["min_action"]
@@ -737,7 +768,12 @@ def decide_scan(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
         if item["weekly_target"] and completed >= item["weekly_target"]:
             continue
         windows = preferred_windows(item["preferred_window"])
-        if not in_windows(now.time(), windows):
+        slot = todays_slot(item["id"], now, windows)
+        if slot is None:
+            continue
+        if not (slot <= now < slot + timedelta(minutes=CATCH_MINUTES)):
+            continue
+        if skip_this_day(item["id"], now):
             continue
         last = last_nudge(conn, item["id"])
         if last:
@@ -745,17 +781,13 @@ def decide_scan(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
             wait = COOLDOWN_HOURS.get(last["outcome"], 16)
             if last_at and (now - last_at) < timedelta(hours=wait):
                 continue
-            age = (now - last_at).total_seconds() if last_at else 10**9
-        else:
-            mentioned = parse_stored_dt(item["last_mentioned_at"], now.tzinfo)
-            age = (now - mentioned).total_seconds() if mentioned else 10**9
         item["week_completed"] = completed
         item["message"] = compose_nudge(item)
-        candidates.append((age, item))
+        candidates.append(((now - slot).total_seconds(), item))
 
     if not candidates:
         return {"action": "silent", "reason": "no_eligible_intention"}
-    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    candidates.sort(key=lambda pair: pair[0])
     chosen = candidates[0][1]
     return {
         "action": "nudge",

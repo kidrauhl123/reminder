@@ -47,13 +47,12 @@ python3 scripts/reminder.py log-nudge --intention-id i_xxxxxxxx --outcome skip
 
 `today` 会列出当天锚点、当天硬提醒、未关闭意愿，以及本周完成次数。不要把「本周 0/3」说成责备。
 
-轻扫描（该叫才叫，默认一天最多一声）：
+轻扫描（该叫才叫，一天最多一声，时刻每天不同）：
 
 ```bash
 python3 scripts/reminder.py scan
-python3 scripts/reminder.py scan --at 2026-08-26T20:00
-python3 scripts/reminder.py maybe-send --dry-run --at 2026-08-26T20:00
+python3 scripts/reminder.py maybe-send --dry-run
 python3 scripts/reminder.py maybe-send
 ```
 
-`maybe-send` 不该叫时不要打印任何内容，以免宿主把 stdout 发给用户。循环任务用 `--exec` 跑它，并加 `--silent`。用户说「别再主动叫我」时停掉这个任务。
+`maybe-send` 不该叫时不要打印任何内容，以免宿主把 stdout 发给用户。不要把扫描时刻或频率告诉用户。用户说「别再主动叫我」时停掉这个任务。

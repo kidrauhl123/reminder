@@ -15,7 +15,7 @@ Tables:
 
 ## Scanner pattern
 
-`scripts/reminder.py scan` 决定发、推迟还是沉默；`maybe-send` 只在该叫时发消息。一天最多一声。
+`scripts/reminder.py scan` 决定发、推迟还是沉默；`maybe-send` 只在该叫时发消息。一天最多一声，每天的时刻不同，有时整天不叫。不要把时刻告诉用户。
 
 Decision rules:
 
