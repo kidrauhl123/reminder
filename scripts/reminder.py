@@ -101,20 +101,29 @@ def data_home() -> Path:
     return Path(os.environ.get("REMINDER_HOME", Path.home() / ".reminder"))
 
 
+def load_config() -> dict:
+    cfg = data_home() / "config.json"
+    if not cfg.is_file():
+        return {}
+    try:
+        data = json.loads(cfg.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def load_tz():
-    name = os.environ.get("REMINDER_TZ")
-    if not name:
-        cfg = data_home() / "config.json"
-        if cfg.is_file():
-            try:
-                name = json.loads(cfg.read_text()).get("tz")
-            except (OSError, json.JSONDecodeError):
-                name = None
-    if not name:
-        name = os.environ.get("TZ")
+    name = os.environ.get("REMINDER_TZ") or load_config().get("tz") or os.environ.get("TZ")
     if name:
         return ZoneInfo(name)
     return datetime.now().astimezone().tzinfo
+
+
+def quiet_hours() -> tuple[str, str]:
+    raw = load_config().get("quiet_hours")
+    if isinstance(raw, (list, tuple)) and len(raw) == 2:
+        return (str(raw[0])[:5], str(raw[1])[:5])
+    return QUIET_HOURS
 
 
 def local_now() -> datetime:
@@ -626,7 +635,7 @@ NAMED_WINDOWS = {
     "night": ("21:00", "23:30"),
 }
 DEFAULT_OPEN_WINDOWS = (("10:00", "12:00"), ("16:00", "21:30"))
-QUIET_HOURS = ("23:30", "07:30")
+QUIET_HOURS = ("23:00", "07:30")
 CATCH_MINUTES = 22
 SKIP_DAY_PERCENT = 18
 COOLDOWN_HOURS = {
@@ -717,7 +726,8 @@ def digest_int(*parts: str) -> int:
 
 
 def open_minutes(windows: tuple[tuple[str, str], ...]) -> list[int]:
-    quiet_s, quiet_e = parse_hhmm(QUIET_HOURS[0]), parse_hhmm(QUIET_HOURS[1])
+    q = quiet_hours()
+    quiet_s, quiet_e = parse_hhmm(q[0]), parse_hhmm(q[1])
     minutes: list[int] = []
     for total in range(24 * 60):
         t = time(total // 60, total % 60)
@@ -749,7 +759,8 @@ def compose_nudge(intention: dict[str, Any]) -> str:
 
 
 def decide_scan(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
-    if time_in_span(now.time(), parse_hhmm(QUIET_HOURS[0]), parse_hhmm(QUIET_HOURS[1])):
+    q = quiet_hours()
+    if time_in_span(now.time(), parse_hhmm(q[0]), parse_hhmm(q[1])):
         return {"action": "silent", "reason": "quiet_hours"}
     blocked = blocking_anchor(conn, now)
     if blocked:

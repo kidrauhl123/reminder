@@ -1,6 +1,6 @@
 # 本地提醒库
 
-运行时数据在 `~/.reminder/reminder.sqlite`（可用 `REMINDER_HOME` 改目录）。时区：`REMINDER_TZ`，否则 `~/.reminder/config.json` 的 `tz`，否则机器时区。skill 目录只放说明书和脚本，不要往 skill 里写状态。
+运行时数据在 `~/.reminder/reminder.sqlite`（可用 `REMINDER_HOME` 改目录）。时区：`REMINDER_TZ`，否则 `~/.reminder/config.json` 的 `tz`，否则机器时区。深夜窗口看 `config.json` 的 `quiet_hours`。skill 目录只放说明书和脚本，不要往 skill 里写状态。
 
 用 `scripts/reminder.py`，不要手写 SQL。其他命令会自动建表。`--json` 可改成 JSON。
 
