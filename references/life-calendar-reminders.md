@@ -1,6 +1,6 @@
 # Life-calendar reminder backend notes
 
-表已经在 `~/.reminder/reminder.sqlite`。当天这一页用 `scripts/reminder.py today`。scanner 弱提醒还没接。
+表已经在 `~/.reminder/reminder.sqlite`。当天这一页用 `scripts/reminder.py today`。轻扫描用 `scan` / `maybe-send`。
 
 ## Model
 
@@ -15,9 +15,9 @@ Tables:
 
 ## Scanner pattern
 
-Create a small recurring scanner cron job. The scanner reads the DB and decides one of: send a gentle prompt, defer, or stay silent.
+`scripts/reminder.py scan` 决定发、推迟还是沉默；`maybe-send` 只在该叫时发消息。一天最多一声。
 
-Decision rules used in the first implementation:
+Decision rules:
 
 1. Do not nudge inside blocking life anchors (`meal`, `sleep`, `class`, `commute`, `busy`).
 2. Only consider intentions inside their preferred time window.
