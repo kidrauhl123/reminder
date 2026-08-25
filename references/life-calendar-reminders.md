@@ -1,14 +1,14 @@
 # Life-calendar reminder backend notes
 
-Use this when the user wants reminders that are more intelligent than flat cron alerts: daily anchors, fuzzy intentions, weak nudges, and feedback-sensitive planning.
+这是后端设想，本 skill 不实现 scanner。当用户想要比扁平闹钟更聪明的提醒（日常锚点、模糊意愿、弱提醒、按反馈调整）时再读。
 
 ## Model
 
-Keep durable state in the reminder SQLite store, not in skill files and not as many flat cron jobs.
+Durable state belongs in the host store, not in skill files and not as many flat scheduled jobs.
 
 Recommended tables/objects:
 
-- `reminders`: hard reminders mirrored from `skills=["reminder"]` cron jobs.
+- `reminders`: hard reminders mirrored from reminder-skill jobs.
 - `reminder_events`: lifecycle/history for hard reminders.
 - `life_anchors`: background blocks such as meals, sleep, class, commute, busy periods, and good activity windows. These usually do **not** send messages by themselves.
 - `intentions`: long-running fuzzy goals such as fitness or study, with strength (`weak`/`medium`/`strong`), weekly target, minimum action, preferred window, and proactive-nudge permission.

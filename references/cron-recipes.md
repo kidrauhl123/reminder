@@ -1,6 +1,6 @@
 # Hermes Cron 调用配方
 
-按需读取本文件。所有示例都是工具参数示意；调用实际的 `cronjob` 工具，不要把 JSON 原样发给用户。
+按需读取本文件。仅当调度后端是 Hermes `cronjob` 时使用；cc-connect 见 [cc-connect-recipes.md](cc-connect-recipes.md)。所有示例都是工具参数示意；调用实际的 `cronjob` 工具，不要把 JSON 原样发给用户。
 
 ## 单次提醒
 
