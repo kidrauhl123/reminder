@@ -1,6 +1,6 @@
-# Hermes Cron 调用配方
+# cronjob 工具配方
 
-按需读取本文件。仅当调度后端是 Hermes `cronjob` 时使用；cc-connect 见 [cc-connect-recipes.md](cc-connect-recipes.md)。所有示例都是工具参数示意；调用实际的 `cronjob` 工具，不要把 JSON 原样发给用户。
+按需读取。仅当宿主提供 `cronjob` 工具时使用；cc-connect 见 [cc-connect-recipes.md](cc-connect-recipes.md)。示例是工具参数示意，调用实际工具，不要把 JSON 原样发给用户。
 
 ## 单次提醒
 
@@ -16,7 +16,7 @@
 }
 ```
 
-通常省略 `deliver`，让 Hermes 自动投递回创建任务的原会话并保留话题。不要使用旧字段 `attach_to_session`；当前 Hermes 的 `cronjob` schema 不需要它。不要用相对时间作为单次提醒的持久计划，以免基准时间产生误解。
+通常省略 `deliver`，让结果回到创建任务的原会话。不要传已过时的 `attach_to_session`。不要用相对时间作为单次提醒的持久计划，以免基准时间产生误解。
 
 ## DDL 型任务：提前开始，而不是到点交付
 
@@ -108,7 +108,7 @@
 }
 ```
 
-Cron 表达式使用 Hermes 配置的时区。创建前确认用户已主动要求这个长期节奏，并先 `list` 检查是否已有同义任务。
+Cron 表达式使用宿主配置的时区。创建前确认用户已主动要求这个长期节奏，并先 `list` 检查是否已有同义任务。
 
 ## 推迟当前提醒
 

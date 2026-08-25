@@ -26,9 +26,9 @@ Decision rules used in the first implementation:
 4. Cool down after any recent sent/positive nudge, and cool down longer after rejected/annoyed/skip.
 5. For weak intentions, phrase as readiness check, not command: “现在适合推进 X 吗？最低标准：Y。不想做也没关系。”
 
-## Cron tool pitfall
+## Schedule format
 
-The `cronjob` tool may reject natural display strings like `once at 2026-08-24 13:15` even though list output displays schedules that way. For creation, pass ISO timestamps such as `2026-08-24T13:15:00+08:00`.
+创建时用宿主真正接受的格式（ISO 时间戳或 cron 表达式），不要把列表里的展示文案原样送回去。
 
 ## User-facing behavior
 

@@ -1,19 +1,16 @@
 ---
 name: reminder
 description: "帮助用户把含糊的待办、拖延和生活安排转成低压力的下一步与可靠提醒，并管理一次性、重复性提醒和轻量复盘。Use when 用户说‘提醒我’、需要安排时间、觉得生活很乱或拖延、想规划今天，或回复‘完成/推迟/取消’。"
-version: 0.2.0
+version: 0.2.1
 author: kidrauhl123
 license: MIT
-metadata:
-  hermes:
-    tags: [Productivity, Reminder, Planning, Chinese]
 ---
 
 # Reminder
 
 做一个低压力、能真正把事情记住的个人助手。替用户承担整理和安排的工作，不要求用户先成为擅长计划的人。
 
-本 skill 是行为说明书，不是某个 Agent 的专属插件。调度由宿主提供：优先 cc-connect，其次 Hermes `cronjob`。
+调度用当前环境里实际能创建定时任务的能力，不要把这个 skill 理解成某个 Agent 的专属插件。
 
 ## 工作原则
 
@@ -29,11 +26,11 @@ metadata:
 
 按可用性选一个，不要混用：
 
-1. **cc-connect**（优先）：当前环境有 `cc-connect` CLI，或已设置 `CC_PROJECT` / `CC_SESSION_KEY`。一次性用 `timer`，循环用 `cron`。配方见 [cc-connect 调用配方](references/cc-connect-recipes.md)。
-2. **Hermes `cronjob`**：存在该工具时使用。配方见 [Hermes Cron 调用配方](references/cron-recipes.md)。
-3. **都没有**：只做规划和文案，明确说现在没法到点叫醒，不要假装已创建提醒。
+1. 环境里有 `cc-connect`（或已设置 `CC_PROJECT` / `CC_SESSION_KEY`）：一次性用 `timer`，循环用 `cron`。见 [cc-connect-recipes.md](references/cc-connect-recipes.md)。
+2. 有其他定时工具：按那个工具创建，原则相同——打回当前会话、prompt 自包含。若工具叫 `cronjob`，参数示例见 [cron-recipes.md](references/cron-recipes.md)。
+3. 都没有：只做规划和文案，明确说没法到点叫醒，不要假装已创建提醒。
 
-不要让用户去敲 `/timer` 或 `/cron`；由你调用后端。CLI 或工具没返回成功，就不要声称成功。
+不要让用户去敲调度命令；由你调用。没返回成功就不要声称成功。
 
 ## 判断当前模式
 
@@ -53,7 +50,7 @@ metadata:
 4. 未指定具体钟点且风险较低时，可采用默认值并在结果中明说：早上 09:00、中午 12:30、下午 15:00、晚上 20:00、睡前 22:30。
 5. 创建成功后只回报：提醒内容、首次触发时间、重复规则；若 DDL 和提醒时间不同，也说明 DDL。
 6. 创建重复提醒前先列出已有任务，避免同义重复。
-7. 对话型提醒默认打回当前会话：cc-connect 不要传 `--project` / `--session-key`；Hermes 不要无故传 `deliver`。
+7. 对话型提醒默认打回当前会话。宿主已注入会话信息时，不要再传项目或会话参数，也不要无故指定投递目标。
 
 ## DDL 与提前提醒
 

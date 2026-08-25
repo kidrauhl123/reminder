@@ -2,7 +2,7 @@
 
 一个中文个人助手 Skill：把随口说出的待办、拖延和混乱安排，变成低压力的下一步和真正会触发的提醒。
 
-它是给 Agent 读的行为说明书（`SKILL.md` 约定），不是独立 App，也不绑定单一宿主。调度由宿主提供：有 [cc-connect](https://github.com/chenhg5/cc-connect) 时用它的 timer/cron；有 Hermes `cronjob` 时用 Hermes。没有调度后端时，这个 skill 仍能做规划和文案，只是没法到点叫醒。
+给任何认 `SKILL.md` 的 Agent 用。调度交给当前环境里已有的定时能力；没有调度时，仍能做规划和文案，只是没法到点叫醒。
 
 当前版本用于验证单用户体验，不包含账号系统、GUI 或自建调度服务。
 
@@ -21,25 +21,14 @@
 
 ## 安装
 
-克隆完整目录，确保 `references/` 一起可用：
+把完整目录放到当前 Agent 的 skills 路径，确保 `references/` 一起在：
 
 ```bash
-# Grok
 git clone https://github.com/kidrauhl123/reminder.git ~/.grok/skills/reminder
-
-# Claude Code
-git clone https://github.com/kidrauhl123/reminder.git ~/.claude/skills/reminder
-
-# Codex
-git clone https://github.com/kidrauhl123/reminder.git ~/.codex/skills/reminder
-
-# Hermes
-git clone https://github.com/kidrauhl123/reminder.git ~/.hermes/skills/reminder
+# 或 ~/.claude/skills/reminder 、 ~/.codex/skills/reminder ，以及其他认 SKILL.md 的目录
 ```
 
-只装 raw `SKILL.md` 可能丢 `references/`，不推荐。
-
-定时要响，对应宿主得常驻：cc-connect 用 `cc-connect daemon`；Hermes 用 `hermes gateway`。时区跟机器本地时间（cc-connect）或 `~/.hermes/config.yaml` 的 `timezone`（Hermes）。
+只装 raw `SKILL.md` 可能丢 `references/`，不推荐。定时要响，宿主的调度服务得常驻；时间按本机本地时区。
 
 ## 使用
 
@@ -64,13 +53,13 @@ git clone https://github.com/kidrauhl123/reminder.git ~/.hermes/skills/reminder
 - 不擅自创建长期习惯
 - 每条定时提示词都自包含，不依赖旧聊天记录
 
-详细行为在 [SKILL.md](SKILL.md)。cc-connect 配方在 [references/cc-connect-recipes.md](references/cc-connect-recipes.md)，Hermes 配方在 [references/cron-recipes.md](references/cron-recipes.md)。
+详细行为在 [SKILL.md](SKILL.md)。调度配方按当前环境读 [references/](references/)。
 
 ## 当前限制
 
-- 调度精度大约一分钟；cc-connect daemon 或 Hermes Gateway 必须常驻。
+- 调度精度大约一分钟；创建提醒的那个调度服务必须常驻。
 - 到点后的会话不一定看得到创建时的聊天，所以提醒内容要写进任务提示词。
-- cc-connect 的循环任务是五段 cron，没有“从现在起每 2 小时”这种 interval。
+- 循环任务常常是五段 cron，没有“从现在起每 2 小时”时，用对齐钟点的表达式并说明。
 - 这是体验原型，尚未验证长期记忆、跨渠道同步和复杂日程冲突。
 
 ## License
