@@ -17,7 +17,7 @@
 - “提醒我学习/推进项目/变规律”——先转成一个 10 分钟内能开始的具体动作
 - 晨间启动和晚间回顾——仅在用户主动要求时开启
 
-没有脚本、额外依赖或 API Key。
+调度没有额外依赖或 API Key。本地背景库是标准库 SQLite，数据在 `~/.reminder/`，不进 git。
 
 ## 安装
 
@@ -28,7 +28,7 @@ git clone https://github.com/kidrauhl123/reminder.git ~/.grok/skills/reminder
 # 或 ~/.claude/skills/reminder 、 ~/.codex/skills/reminder ，以及其他认 SKILL.md 的目录
 ```
 
-只装 raw `SKILL.md` 可能丢 `references/`，不推荐。定时要响，宿主的调度服务得常驻；时间按本机本地时区。
+只装 raw `SKILL.md` 可能丢 `references/` 和 `scripts/`，不推荐。定时要响，宿主的调度服务得常驻；时间按本机本地时区。背景和意愿记在 `~/.reminder/reminder.sqlite`，用 `scripts/reminder.py today` 看当天这一页。
 
 ## 使用
 
@@ -60,6 +60,7 @@ git clone https://github.com/kidrauhl123/reminder.git ~/.grok/skills/reminder
 - 调度精度大约一分钟；创建提醒的那个调度服务必须常驻。
 - 到点后的会话不一定看得到创建时的聊天，所以提醒内容要写进任务提示词。
 - 循环任务常常是五段 cron，没有“从现在起每 2 小时”时，用对齐钟点的表达式并说明。
+- 本地库只记背景、意愿和硬提醒镜像，不是完整日历产品；弱提醒 scanner 尚未接入。
 - 这是体验原型，尚未验证长期记忆、跨渠道同步和复杂日程冲突。
 
 ## License

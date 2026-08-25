@@ -1,19 +1,48 @@
-# Persistent reminder store notes
+# 本地提醒库
 
-这是可选的后端设想，不是本 skill 的运行时实现。调度状态由宿主自己保存；skill 目录只放说明书。
+运行时数据在 `~/.reminder/reminder.sqlite`（可用 `REMINDER_HOME` 改目录）。skill 目录只放说明书和脚本，不要往 skill 里写状态。
 
-## 原则
+用 `scripts/reminder.py`，不要手写 SQL。其他命令会自动建表。`--json` 可改成 JSON。
 
-- skill 目录是包装/文档：`SKILL.md`、`references/`、`templates/`、`scripts/`。
-- 可变状态不要写进 skill 文件。
-- 一次性与循环任务的记录放在宿主自己的数据目录，例如 cc-connect 用 `~/.cc-connect/timers/` 和 `~/.cc-connect/crons/`。
+```bash
+python3 scripts/reminder.py status
+python3 scripts/reminder.py today
+python3 scripts/reminder.py today --date 2026-08-26
+```
 
-## 若宿主要做状态镜像
+硬提醒（闹钟仍由宿主调度；这里只镜像）：
 
-最小有用的表：
+```bash
+python3 scripts/reminder.py add-reminder --title "准备提交材料" --remind-at "2026-08-26T09:00" --due-at "2026-08-26T15:00" --job-id "<timer-id>" --job-kind timer
+python3 scripts/reminder.py list-reminders
+python3 scripts/reminder.py set-reminder r_xxxxxxxx --status done
+```
 
-- `schema_meta(key, value, updated_at)` — schema version.
-- `reminders` — 一条提醒对应一个调度任务。重要列：`id`、`job_id`、`title`、`details`、`status`、`remind_at`、`due_at`、`repeat_rule`、投递目标、`source_message`、时间戳。
-- `reminder_events` — 只追加的生命周期：`created`、`updated`、`paused`、`resumed`、`fired`、`failed`、`completed`、`cancelled`、`snoozed`。
+意愿（说过想做、还没变成闹钟的背景）：
 
-只镜像明确按 reminder skill 创建的任务，避免把无关自动化写进提醒库。宿主调度失败时，提醒库错误必须是 best-effort、非致命。
+```bash
+python3 scripts/reminder.py add-intention --title "健身" --strength weak --min-action "换鞋出门 10 分钟" --weekly-target 3 --preferred-window "19:00-21:00"
+python3 scripts/reminder.py mention-intention i_xxxxxxxx
+python3 scripts/reminder.py complete-intention i_xxxxxxxx
+python3 scripts/reminder.py list-intentions
+```
+
+日常锚点（吃饭/睡觉/上课等，默认自己不响，只挡住乱叫）：
+
+```bash
+python3 scripts/reminder.py add-anchor --title "午睡" --kind sleep --weekdays daily --start-time 13:00 --end-time 14:00
+python3 scripts/reminder.py list-anchors
+```
+
+`kind`：`meal` / `sleep` / `class` / `commute` / `busy` / `free`。`weekdays`：`daily`、`weekdays`、`weekends`，或 `mon,tue`。
+
+反馈（只记事实，不记「又没做」这种判断）：
+
+```bash
+python3 scripts/reminder.py log-nudge --intention-id i_xxxxxxxx --outcome sent
+python3 scripts/reminder.py log-nudge --intention-id i_xxxxxxxx --outcome skip
+```
+
+`outcome`：`sent` / `accepted` / `completed` / `rejected` / `annoyed` / `skip`。
+
+`today` 会列出当天锚点、当天硬提醒、未关闭意愿，以及本周完成次数。不要把「本周 0/3」说成责备。

@@ -1,15 +1,14 @@
 # Life-calendar reminder backend notes
 
-这是后端设想，本 skill 不实现 scanner。当用户想要比扁平闹钟更聪明的提醒（日常锚点、模糊意愿、弱提醒、按反馈调整）时再读。
+表已经在 `~/.reminder/reminder.sqlite`。当天这一页用 `scripts/reminder.py today`。scanner 弱提醒还没接。
 
 ## Model
 
-Durable state belongs in the host store, not in skill files and not as many flat scheduled jobs.
+Durable state belongs in `~/.reminder/`, not in skill files and not as many flat scheduled jobs.
 
-Recommended tables/objects:
+Tables:
 
-- `reminders`: hard reminders mirrored from reminder-skill jobs.
-- `reminder_events`: lifecycle/history for hard reminders.
+- `reminders`: hard reminders mirrored from host scheduler jobs.
 - `life_anchors`: background blocks such as meals, sleep, class, commute, busy periods, and good activity windows. These usually do **not** send messages by themselves.
 - `intentions`: long-running fuzzy goals such as fitness or study, with strength (`weak`/`medium`/`strong`), weekly target, minimum action, preferred window, and proactive-nudge permission.
 - `nudge_history`: every weak prompt and user response/outcome (`sent`, `accepted`, `completed`, `rejected`, `annoyed`, `skip`, etc.).
