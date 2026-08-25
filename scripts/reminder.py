@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 SCHEMA_VERSION = "1"
 
@@ -94,8 +95,32 @@ CREATE INDEX IF NOT EXISTS idx_nudge_intention ON nudge_history(intention_id, cr
 """
 
 
+def data_home() -> Path:
+    return Path(os.environ.get("REMINDER_HOME", Path.home() / ".reminder"))
+
+
+def load_tz():
+    name = os.environ.get("REMINDER_TZ")
+    if not name:
+        cfg = data_home() / "config.json"
+        if cfg.is_file():
+            try:
+                name = json.loads(cfg.read_text()).get("tz")
+            except (OSError, json.JSONDecodeError):
+                name = None
+    if not name:
+        name = os.environ.get("TZ")
+    if name:
+        return ZoneInfo(name)
+    return datetime.now().astimezone().tzinfo
+
+
+def local_now() -> datetime:
+    return datetime.now(load_tz()).replace(microsecond=0)
+
+
 def now_iso() -> str:
-    return datetime.now().astimezone().replace(microsecond=0).isoformat()
+    return local_now().isoformat()
 
 
 def new_id(prefix: str) -> str:
@@ -103,8 +128,7 @@ def new_id(prefix: str) -> str:
 
 
 def default_db_path() -> Path:
-    home = Path(os.environ.get("REMINDER_HOME", Path.home() / ".reminder"))
-    return home / "reminder.sqlite"
+    return data_home() / "reminder.sqlite"
 
 
 def parse_when(value: str | None) -> str | None:
@@ -136,12 +160,13 @@ def parse_when(value: str | None) -> str | None:
 
 
 def parse_date(value: str | None) -> datetime:
+    tz = load_tz()
     if not value:
-        return datetime.now().astimezone().replace(microsecond=0)
+        return local_now()
     text = value.strip()
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
         try:
-            return datetime.strptime(text, fmt)
+            return datetime.strptime(text, fmt).replace(tzinfo=tz)
         except ValueError:
             continue
     raise SystemExit(f"无法解析日期: {value}（用 2026-08-26）")
@@ -257,8 +282,9 @@ def cmd_status(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         "life_anchors": conn.execute("SELECT COUNT(*) FROM life_anchors").fetchone()[0],
         "nudge_history": conn.execute("SELECT COUNT(*) FROM nudge_history").fetchone()[0],
     }
-    data = {"db": str(args.db_path), "version": version, "counts": counts}
-    lines = [f"db {args.db_path}", f"version {version}"]
+    tz = str(load_tz())
+    data = {"db": str(args.db_path), "version": version, "tz": tz, "counts": counts}
+    lines = [f"db {args.db_path}", f"version {version}", f"tz {tz}"]
     lines.extend(f"{k} {v}" for k, v in counts.items())
     emit(args, data, "\n".join(lines))
 
