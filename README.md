@@ -11,7 +11,7 @@
 - “明天下午三点提醒我交材料”——创建单次必做提醒
 - “周五下午三点前要交报告”——记成截止，优先提前提醒你开始做，而不是只在 DDL 时催交付
 - 丢来 orientation / 群通知日程——每条有钟点的场次记成可选事件，到点轻喊，去不去都行
-- 节日、假期、生日等特殊日子——记进本地日历，默认不叫。全国法定假日预填在仓库 `data/cn/`；学年历和生日只在本机
+- 节日、假期、生日等特殊日子——记进本地日历，默认不叫。全国法定假日在 `data/cn/`，农历对照和传统节日在 `data/lunar/`；学年历和生日只在本机
 - “每周日晚上提醒我收拾房间”——创建重复提醒
 - “十分钟后再叫我”——推迟本次行动，不破坏原有重复规则
 - “取消健身提醒”——查找并管理已有任务
@@ -29,7 +29,7 @@ git clone https://github.com/kidrauhl123/reminder.git ~/.grok/skills/reminder
 # 或 ~/.claude/skills/reminder 、 ~/.codex/skills/reminder ，以及其他认 SKILL.md 的目录
 ```
 
-只装 raw `SKILL.md` 可能丢 `references/`、`scripts/` 和 `data/`，不推荐。定时要响，宿主的调度服务得常驻；时间按本机本地时区。日历和意愿记在 `~/.reminder/reminder.sqlite`，用 `scripts/reminder.py today` 看当天这一页。全国法定假日在 `data/cn/`，clone 后会进本机库。
+只装 raw `SKILL.md` 可能丢 `references/`、`scripts/` 和 `data/`，不推荐。定时要响，宿主的调度服务得常驻；时间按本机本地时区。日历和意愿记在 `~/.reminder/reminder.sqlite`，用 `scripts/reminder.py today` 看当天这一页。法定假日和农历在 `data/`，clone 后会进本机库。
 
 ## 使用
 

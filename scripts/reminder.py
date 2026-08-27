@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -39,13 +40,66 @@ STRENGTHS = ("weak", "medium", "strong")
 ANCHOR_KINDS = ("meal", "sleep", "class", "commute", "busy", "free")
 NUDGE_OUTCOMES = ("sent", "accepted", "completed", "rejected", "annoyed", "skip")
 JOB_KINDS = ("timer", "cron", "other")
-EVENT_SOURCES = ("user", "cn", "cityu-dg")
+EVENT_SOURCES = ("user", "cn", "cityu-dg", "lunar")
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 WEEKDAY_ZH = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 CN_HOLIDAY_URLS = (
     "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json",
     "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json",
 )
+HKO_LUNAR_URL = "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T{year}c.txt"
+GAN = "甲乙丙丁戊己庚辛壬癸"
+ZHI = "子丑寅卯辰巳午未申酉戌亥"
+ZODIAC = "鼠牛虎兔龙蛇马羊猴鸡狗猪"
+HANS = str.maketrans({
+    "馬": "马",
+    "龍": "龙",
+    "雞": "鸡",
+    "豬": "猪",
+    "驚": "惊",
+    "蟄": "蛰",
+    "穀": "谷",
+    "滿": "满",
+    "種": "种",
+    "處": "处",
+    "閏": "闰",
+    "曆": "历",
+    "農": "农",
+    "節": "节",
+})
+LUNAR_DAY_NAMES = (
+    "初一,初二,初三,初四,初五,初六,初七,初八,初九,初十,"
+    "十一,十二,十三,十四,十五,十六,十七,十八,十九,二十,"
+    "廿一,廿二,廿三,廿四,廿五,廿六,廿七,廿八,廿九,三十"
+).split(",")
+LUNAR_DAY_NUM = {name: i + 1 for i, name in enumerate(LUNAR_DAY_NAMES)}
+LUNAR_MONTH_NAMES = ("正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月")
+LUNAR_FESTIVALS = {
+    (1, 1): "春节",
+    (1, 15): "元宵节",
+    (2, 2): "龙抬头",
+    (5, 5): "端午节",
+    (7, 7): "七夕",
+    (7, 15): "中元节",
+    (8, 15): "中秋节",
+    (9, 9): "重阳节",
+    (12, 8): "腊八",
+    (12, 23): "小年",
+}
+LUNAR_EVENT_KINDS = {
+    "除夕": "holiday",
+    "元宵节": "holiday",
+    "龙抬头": "marker",
+    "七夕": "holiday",
+    "中元节": "marker",
+    "重阳节": "holiday",
+    "腊八": "marker",
+    "小年": "marker",
+    "立春": "marker",
+    "冬至": "marker",
+}
+HKO_ROW_RE = re.compile(r"^(\d{4})年(\d{1,2})月(\d{1,2})日\s+(\S+)\s+星期(\S+)\s*(.*)$")
+HKO_HEADER_RE = re.compile(r"^(\d{4})\((.{2}) - 肖(.+)\)")
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -153,6 +207,27 @@ def bundled_cn_path(year: int) -> Path:
 
 def bundled_cn_years() -> list[int]:
     folder = bundled_cn_dir()
+    if not folder.is_dir():
+        return []
+    years: list[int] = []
+    for path in folder.glob("*.json"):
+        try:
+            years.append(int(path.stem))
+        except ValueError:
+            continue
+    return sorted(set(years))
+
+
+def bundled_lunar_dir() -> Path:
+    return skill_root() / "data" / "lunar"
+
+
+def bundled_lunar_path(year: int) -> Path:
+    return bundled_lunar_dir() / f"{year}.json"
+
+
+def bundled_lunar_years() -> list[int]:
+    folder = bundled_lunar_dir()
     if not folder.is_dir():
         return []
     years: list[int] = []
@@ -369,6 +444,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     for row in conn.execute("SELECT id FROM reminders WHERE kind = 'event'"):
         ensure_event_for_reminder(conn, row["id"])
     seed_bundled_cn(conn)
+    seed_bundled_lunar(conn)
     stamp = now_iso()
     conn.execute(
         "INSERT INTO schema_meta(key, value, updated_at) VALUES(?, ?, ?) "
@@ -962,6 +1038,229 @@ def seed_bundled_cn(conn: sqlite3.Connection) -> None:
         apply_cn_payloads(conn, payloads, prune=False)
 
 
+def hans(text: str) -> str:
+    return text.translate(HANS)
+
+
+def ganzhi_index(name: str) -> int:
+    if len(name) < 2:
+        raise SystemExit(f"干支无效: {name}")
+    gan, zhi = name[0], name[1]
+    for i in range(60):
+        if GAN[i % 10] == gan and ZHI[i % 12] == zhi:
+            return i
+    raise SystemExit(f"干支无效: {name}")
+
+
+def shift_ganzhi(name: str, delta: int) -> str:
+    i = (ganzhi_index(name) + delta) % 60
+    return GAN[i % 10] + ZHI[i % 12]
+
+
+def zodiac_of(ganzhi: str) -> str:
+    return ZODIAC[ZHI.index(ganzhi[1])]
+
+
+def parse_lunar_month_token(token: str) -> tuple[int, bool] | None:
+    text = hans(token)
+    leap = text.startswith("闰")
+    if leap:
+        text = text[1:]
+    if text == "腊月":
+        return 12, leap
+    if text in LUNAR_MONTH_NAMES:
+        return LUNAR_MONTH_NAMES.index(text) + 1, leap
+    return None
+
+
+def lunar_label(month: int, day: int, leap: bool) -> str:
+    month_name = LUNAR_MONTH_NAMES[month - 1]
+    if month == 12 and not leap:
+        month_name = "腊月"
+    if leap:
+        month_name = "闰" + month_name
+    return month_name + LUNAR_DAY_NAMES[day - 1]
+
+
+def parse_hko_lunar(text: str, year: int) -> dict[str, Any]:
+    header = hans(text.splitlines()[0].lstrip("\ufeff").strip())
+    matched = HKO_HEADER_RE.match(header)
+    if not matched:
+        raise SystemExit(f"{year} 农历表头无法解析: {header}")
+    file_year = int(matched.group(1))
+    ganzhi = matched.group(2)
+    raw_rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        row = HKO_ROW_RE.match(line.strip())
+        if not row:
+            continue
+        raw_rows.append(
+            {
+                "date": date(int(row.group(1)), int(row.group(2)), int(row.group(3))),
+                "token": hans(row.group(4)),
+                "jieqi": hans(row.group(6).strip()) or None,
+            }
+        )
+    if not raw_rows:
+        raise SystemExit(f"{year} 农历表没有日期行")
+    month = 0
+    leap = False
+    filled: list[dict[str, Any]] = []
+    for item in raw_rows:
+        parsed_month = parse_lunar_month_token(item["token"])
+        if parsed_month:
+            month, leap = parsed_month
+            day = 1
+        else:
+            day = LUNAR_DAY_NUM.get(item["token"])
+            if not day:
+                raise SystemExit(f"{item['date']} 农历无法解析: {item['token']}")
+        filled.append(
+            {
+                "date": item["date"],
+                "month": month,
+                "day": day,
+                "leap": leap,
+                "jieqi": item["jieqi"],
+            }
+        )
+    first_start = next((i for i, item in enumerate(filled) if item["day"] == 1 and item["month"]), None)
+    if first_start is None:
+        raise SystemExit(f"{year} 农历表没有月初")
+    if first_start:
+        start_month = filled[first_start]["month"] - 1 or 12
+        for item in filled[:first_start]:
+            item["month"] = start_month
+            item["leap"] = False
+    prev_gz = shift_ganzhi(ganzhi, -1)
+    seen_spring = False
+    days: list[dict[str, Any]] = []
+    for i, item in enumerate(filled):
+        if item["month"] == 1 and item["day"] == 1 and not item["leap"]:
+            seen_spring = True
+        gz = ganzhi if seen_spring else prev_gz
+        festivals: list[str] = []
+        if not item["leap"]:
+            name = LUNAR_FESTIVALS.get((item["month"], item["day"]))
+            if name:
+                festivals.append(name)
+        nxt = filled[i + 1] if i + 1 < len(filled) else None
+        if nxt and nxt["month"] == 1 and nxt["day"] == 1 and not nxt["leap"]:
+            festivals.append("除夕")
+        entry: dict[str, Any] = {
+            "date": item["date"].isoformat(),
+            "lunar": lunar_label(item["month"], item["day"], item["leap"]),
+            "ganzhi": gz,
+        }
+        if item["jieqi"]:
+            entry["jieqi"] = item["jieqi"]
+        if festivals:
+            entry["festivals"] = festivals
+        days.append(entry)
+    return {
+        "year": file_year,
+        "ganzhi": ganzhi,
+        "zodiac": zodiac_of(ganzhi),
+        "source": HKO_LUNAR_URL.format(year=file_year),
+        "days": days,
+    }
+
+
+def load_lunar_year(year: int, *, refresh: bool = False) -> dict[str, Any] | None:
+    path = bundled_lunar_path(year)
+    if not refresh:
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+        return None
+    raw = http_get_text([HKO_LUNAR_URL.format(year=year)])
+    payload = parse_hko_lunar(raw, year)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def events_from_lunar(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    origin = payload.get("source") or HKO_LUNAR_URL.format(year=payload.get("year"))
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in payload.get("days") or []:
+        start = item.get("date")
+        if not start:
+            continue
+        names = list(item.get("festivals") or [])
+        jieqi = item.get("jieqi")
+        if jieqi in LUNAR_EVENT_KINDS:
+            names.append(jieqi)
+        for name in names:
+            kind = LUNAR_EVENT_KINDS.get(name)
+            if not kind:
+                continue
+            key = (name, start)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "title": name,
+                    "kind": kind,
+                    "start_at": start,
+                    "end_at": None,
+                    "details": f"农历 {item.get('lunar')}；{origin}",
+                }
+            )
+    return rows
+
+
+def apply_lunar_payloads(
+    conn: sqlite3.Connection,
+    payloads: list[dict[str, Any]],
+    *,
+    prune: bool,
+) -> tuple[int, int]:
+    rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        rows.extend(events_from_lunar(payload))
+    keep: set[str] = set()
+    for row in rows:
+        keep.add(
+            upsert_sourced_event(
+                conn,
+                source="lunar",
+                title=row["title"],
+                start_at=row["start_at"],
+                end_at=row["end_at"],
+                kind=row["kind"],
+                details=row["details"],
+            )
+        )
+    cancelled = cancel_missing_sourced(conn, "lunar", keep) if prune else 0
+    return len(keep), cancelled
+
+
+def seed_bundled_lunar(conn: sqlite3.Connection) -> None:
+    payloads = []
+    for year in bundled_lunar_years():
+        payload = load_lunar_year(year, refresh=False)
+        if payload:
+            payloads.append(payload)
+    if payloads:
+        apply_lunar_payloads(conn, payloads, prune=False)
+
+
+def lunar_day_lookup(day_key: str) -> dict[str, Any] | None:
+    try:
+        year = int(day_key[:4])
+    except ValueError:
+        return None
+    payload = load_lunar_year(year, refresh=False)
+    if not payload:
+        return None
+    for item in payload.get("days") or []:
+        if item.get("date") == day_key:
+            return item
+    return None
+
+
 def events_from_cn(payload: dict[str, Any]) -> list[dict[str, Any]]:
     papers = payload.get("papers") or []
     origin = papers[0] if papers else "https://github.com/NateScarlet/holiday-cn"
@@ -1060,8 +1359,43 @@ def cmd_sync_days(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
             + (f"；收掉过期 {cancelled} 条" if cancelled else ""),
         )
         return
+    if source_name == "lunar":
+        refresh = bool(getattr(args, "refresh", False))
+        years = args.year or bundled_lunar_years()
+        if not years:
+            now = local_now()
+            years = [now.year, now.year + 1]
+        payloads = []
+        missing: list[int] = []
+        for year in years:
+            try:
+                payload = load_lunar_year(year, refresh=refresh)
+            except SystemExit:
+                if refresh:
+                    raise
+                payload = None
+            if payload is None:
+                missing.append(year)
+            else:
+                payloads.append(payload)
+        upserted, cancelled = apply_lunar_payloads(conn, payloads, prune=True)
+        conn.commit()
+        miss = f"；缺 {', '.join(str(y) for y in missing)} 年" if missing else ""
+        emit(
+            args,
+            {
+                "source": "lunar",
+                "upserted": upserted,
+                "cancelled": cancelled,
+                "missing_years": missing,
+                "from": "data/lunar" if not refresh else "香港天文台年历",
+            },
+            f"已同步 lunar  {upserted} 条{miss}"
+            + (f"；收掉过期 {cancelled} 条" if cancelled else ""),
+        )
+        return
     if source_name != "file":
-        raise SystemExit("sync-days --source 只能是 cn 或 file")
+        raise SystemExit("sync-days --source 只能是 cn、lunar 或 file")
     if not args.path:
         raise SystemExit("sync-days --source file 需要 --path")
     source, rows = events_from_file(Path(args.path).expanduser())
@@ -1606,6 +1940,7 @@ def cmd_today(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
     payload = {
         "date": day_key,
         "weekday": WEEKDAY_ZH[day.weekday()],
+        "lunar": lunar_day_lookup(day_key),
         "anchors": anchors,
         "events": events,
         "reminders": reminders,
@@ -1615,7 +1950,16 @@ def cmd_today(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
 
 
 def format_today(payload: dict[str, Any]) -> str:
-    lines = [f"# {payload['date']} {payload['weekday']}", "", "## 背景"]
+    title = f"# {payload['date']} {payload['weekday']}"
+    lunar = payload.get("lunar") or {}
+    if lunar.get("lunar"):
+        extra = f"农历{lunar['lunar']}"
+        if lunar.get("festivals"):
+            extra += " " + "、".join(lunar["festivals"])
+        elif lunar.get("jieqi"):
+            extra += " " + lunar["jieqi"]
+        title += f" · {extra}"
+    lines = [title, "", "## 背景"]
     if payload["anchors"]:
         for a in payload["anchors"]:
             block = "挡住弱提醒" if a["blocks_nudge"] else "不挡"
@@ -1825,9 +2169,9 @@ def build_parser() -> argparse.ArgumentParser:
     lns.add_argument("--limit", type=int, default=20)
 
     sd = sub.add_parser("sync-days", help="从官方源刷新节日/假期")
-    sd.add_argument("--source", default="cn", help="cn=仓库预填的法定假；file=本地 JSON")
-    sd.add_argument("--year", action="append", type=int, help="可重复；默认用 data/cn 里已有的年份")
-    sd.add_argument("--refresh", action="store_true", help="联网拉取国务院数据并写回 data/cn")
+    sd.add_argument("--source", default="cn", help="cn=法定假；lunar=农历；file=本地 JSON")
+    sd.add_argument("--year", action="append", type=int, help="可重复；默认用仓库 data 里已有的年份")
+    sd.add_argument("--refresh", action="store_true", help="联网拉取并写回 data/cn 或 data/lunar")
     sd.add_argument("--path", help="--source file 时的 JSON 路径")
     return p
 

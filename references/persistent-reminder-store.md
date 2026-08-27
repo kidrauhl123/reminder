@@ -16,7 +16,9 @@ python3 scripts/reminder.py list-events --date 2026-08-26
 ```bash
 python3 scripts/reminder.py add-event --title "破冰 综合楼三楼" --start-at "2026-08-26T14:00" --end-at "2026-08-26T16:00" --location "综合楼三楼" --job-id "<timer-id>"
 python3 scripts/reminder.py sync-days --source cn
+python3 scripts/reminder.py sync-days --source lunar
 python3 scripts/reminder.py sync-days --source cn --refresh --year 2027
+python3 scripts/reminder.py sync-days --source lunar --refresh --year 2027
 python3 scripts/reminder.py sync-days --source file --path ~/.reminder/sources/cityu-dg.json
 python3 scripts/reminder.py add-event --title "妈妈生日" --start-at 2026-11-03 --all-day --kind marker
 python3 scripts/reminder.py list-events
