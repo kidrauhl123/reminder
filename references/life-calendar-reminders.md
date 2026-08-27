@@ -8,7 +8,7 @@ Durable state belongs in `~/.reminder/`, not in skill files and not as many flat
 
 Tables:
 
-- `events`: local calendar. Start/end/location; `optional=1` means go-or-not. May point at a `reminder_id` for the start-time ping.
+- `events`: local calendar. `kind` is `session` (timed, optional, may ping), `holiday`, `break`, or `marker` (all-day days; no ping). `source` is `user`, `cn` (national holidays bundled in `data/cn/`), or a local school file. `optional=1` only means go-or-not for sessions. National holidays ship in the git repo; school/personal days stay on the machine.
 - `reminders`: hard reminders mirrored from host scheduler jobs. `kind` is `action` (must-do), `event` (legacy ping; auto-copied into `events`), or `deadline` (due time; remind to start earlier).
 - `life_anchors`: background blocks such as meals, sleep, class, commute, busy periods, and good activity windows. These usually do **not** send messages by themselves.
 - `intentions`: long-running fuzzy goals such as fitness or study, with strength (`weak`/`medium`/`strong`), weekly target, preferred window, and proactive-nudge permission.

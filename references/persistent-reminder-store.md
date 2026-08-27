@@ -11,12 +11,17 @@ python3 scripts/reminder.py today --date 2026-08-26
 python3 scripts/reminder.py list-events --date 2026-08-26
 ```
 
-日历场次（开始/结束/地点；默认可选。闹钟仍由宿主调度，用 `--job-id` 挂到点轻喊）：
+日历场次（开始/结束/地点；默认可选。闹钟仍由宿主调度，用 `--job-id` 挂到点轻喊）。全国法定假日预填在 `data/cn/`，启动时写入本机库。学年历/生日不要进仓库：
 
 ```bash
 python3 scripts/reminder.py add-event --title "破冰 综合楼三楼" --start-at "2026-08-26T14:00" --end-at "2026-08-26T16:00" --location "综合楼三楼" --job-id "<timer-id>"
+python3 scripts/reminder.py sync-days --source cn
+python3 scripts/reminder.py sync-days --source cn --refresh --year 2027
+python3 scripts/reminder.py sync-days --source file --path ~/.reminder/sources/cityu-dg.json
+python3 scripts/reminder.py add-event --title "妈妈生日" --start-at 2026-11-03 --all-day --kind marker
 python3 scripts/reminder.py list-events
 python3 scripts/reminder.py list-events --start 2026-08-26 --end 2026-09-06
+python3 scripts/reminder.py list-events --kind holiday
 python3 scripts/reminder.py set-event e_xxxxxxxx --going
 python3 scripts/reminder.py set-event e_xxxxxxxx --status cancelled
 ```

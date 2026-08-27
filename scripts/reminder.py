@@ -10,13 +10,15 @@ import os
 import sqlite3
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import uuid
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "5"
 
 REMINDER_STATUSES = ("active", "paused", "done", "cancelled", "snoozed")
 REMINDER_KINDS = ("action", "event", "deadline")
@@ -26,13 +28,24 @@ REMINDER_KIND_SECTIONS = (
     ("event", "可选（到点叫一声，去不去都行）"),
 )
 EVENT_STATUSES = ("active", "cancelled", "done")
+EVENT_KINDS = ("session", "holiday", "break", "marker")
+EVENT_KIND_LABELS = {
+    "holiday": "节日",
+    "break": "假期",
+    "marker": "日子",
+}
 INTENTION_STATUSES = ("open", "paused", "dropped", "done")
 STRENGTHS = ("weak", "medium", "strong")
 ANCHOR_KINDS = ("meal", "sleep", "class", "commute", "busy", "free")
 NUDGE_OUTCOMES = ("sent", "accepted", "completed", "rejected", "annoyed", "skip")
 JOB_KINDS = ("timer", "cron", "other")
+EVENT_SOURCES = ("user", "cn", "cityu-dg")
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 WEEKDAY_ZH = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+CN_HOLIDAY_URLS = (
+    "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json",
+    "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json",
+)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -106,8 +119,10 @@ CREATE TABLE IF NOT EXISTS events (
   end_at TEXT,
   all_day INTEGER NOT NULL DEFAULT 0,
   optional INTEGER NOT NULL DEFAULT 1,
+  kind TEXT NOT NULL DEFAULT 'session',
   status TEXT NOT NULL DEFAULT 'active',
   reminder_id TEXT,
+  source TEXT NOT NULL DEFAULT 'user',
   source_message TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -122,6 +137,31 @@ CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_at);
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 CREATE INDEX IF NOT EXISTS idx_events_reminder ON events(reminder_id);
 """
+
+
+def skill_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def bundled_cn_dir() -> Path:
+    return skill_root() / "data" / "cn"
+
+
+def bundled_cn_path(year: int) -> Path:
+    return bundled_cn_dir() / f"{year}.json"
+
+
+def bundled_cn_years() -> list[int]:
+    folder = bundled_cn_dir()
+    if not folder.is_dir():
+        return []
+    years: list[int] = []
+    for path in folder.glob("*.json"):
+        try:
+            years.append(int(path.stem))
+        except ValueError:
+            continue
+    return sorted(set(years))
 
 
 def data_home() -> Path:
@@ -296,8 +336,8 @@ def ensure_event_for_reminder(conn: sqlite3.Connection, reminder_id: str) -> str
     conn.execute(
         """INSERT INTO events(
             id, title, details, location, start_at, end_at, all_day, optional,
-            status, reminder_id, source_message, created_at, updated_at
-        ) VALUES (?, ?, ?, NULL, ?, ?, 0, 1, ?, ?, ?, ?, ?)""",
+            kind, status, reminder_id, source, source_message, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, ?, 0, 1, 'session', ?, ?, 'user', ?, ?, ?)""",
         (
             item_id,
             rem["title"],
@@ -319,8 +359,16 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "kind" not in cols:
         conn.execute("ALTER TABLE reminders ADD COLUMN kind TEXT NOT NULL DEFAULT 'action'")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_kind ON reminders(kind)")
+    event_cols = table_columns(conn, "events")
+    if "kind" not in event_cols:
+        conn.execute("ALTER TABLE events ADD COLUMN kind TEXT NOT NULL DEFAULT 'session'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind)")
+    if "source" not in event_cols:
+        conn.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_source ON events(source)")
     for row in conn.execute("SELECT id FROM reminders WHERE kind = 'event'"):
         ensure_event_for_reminder(conn, row["id"])
+    seed_bundled_cn(conn)
     stamp = now_iso()
     conn.execute(
         "INSERT INTO schema_meta(key, value, updated_at) VALUES(?, ?, ?) "
@@ -503,7 +551,14 @@ def cmd_list_reminders(conn: sqlite3.Connection, args: argparse.Namespace) -> No
 def event_label(row: dict[str, Any]) -> str:
     if row["status"] != "active":
         return row["status"]
+    kind = row.get("kind") or "session"
+    if kind in EVENT_KIND_LABELS:
+        return EVENT_KIND_LABELS[kind]
     return "可选" if row.get("optional", 1) else "要去"
+
+
+def is_day_event(row: dict[str, Any]) -> bool:
+    return bool(row.get("all_day")) or (row.get("kind") or "session") != "session"
 
 
 def format_event_span(row: dict[str, Any]) -> str:
@@ -542,8 +597,10 @@ def insert_event(
     end_at: str | None,
     all_day: int,
     optional: int,
+    kind: str,
     status: str,
     reminder_id: str | None,
+    source: str,
     source_message: str | None,
     created_at: str | None = None,
 ) -> str:
@@ -553,8 +610,8 @@ def insert_event(
     conn.execute(
         """INSERT INTO events(
             id, title, details, location, start_at, end_at, all_day, optional,
-            status, reminder_id, source_message, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            kind, status, reminder_id, source, source_message, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item_id,
             title,
@@ -564,8 +621,10 @@ def insert_event(
             end_at,
             all_day,
             optional,
+            kind,
             status,
             reminder_id,
+            source,
             source_message,
             created,
             stamp,
@@ -580,14 +639,20 @@ def cmd_add_event(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         raise SystemExit("add-event 需要 --start-at")
     end_at = parse_when(args.end_at)
     status = require_enum("status", args.status, EVENT_STATUSES, "active")
+    kind = require_enum("kind", args.kind, EVENT_KINDS)
+    if kind is None:
+        kind = "marker" if args.all_day else "session"
+    all_day = 1 if args.all_day or kind != "session" else 0
     optional = 0 if args.going else 1
     if args.optional is not None:
         optional = int(args.optional)
+    if kind != "session":
+        optional = 0 if args.optional is None and not args.going else optional
     reminder_id = args.reminder_id
     if args.job_id and not reminder_id:
         reminder_id = new_id("r")
         stamp = now_iso()
-        kind = "action" if optional == 0 else "event"
+        rem_kind = "action" if optional == 0 else "event"
         conn.execute(
             """INSERT INTO reminders(
                 id, title, details, status, kind, remind_at, due_at, repeat_rule,
@@ -598,7 +663,7 @@ def cmd_add_event(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
                 args.title,
                 args.details,
                 "active" if status == "active" else status,
-                kind,
+                rem_kind,
                 start_at,
                 end_at,
                 args.job_id,
@@ -617,10 +682,12 @@ def cmd_add_event(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         location=args.location,
         start_at=start_at,
         end_at=end_at,
-        all_day=1 if args.all_day else 0,
+        all_day=all_day,
         optional=optional,
+        kind=kind,
         status=status,
         reminder_id=reminder_id,
+        source=require_enum("source", args.source, EVENT_SOURCES, "user") or "user",
         source_message=args.source_message,
     )
     conn.commit()
@@ -644,6 +711,10 @@ def cmd_set_event(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         fields["end_at"] = parse_when(args.end_at)
     if args.all_day is not None:
         fields["all_day"] = int(args.all_day)
+    if args.kind is not None:
+        fields["kind"] = require_enum("kind", args.kind, EVENT_KINDS)
+        if fields["kind"] != "session" and args.all_day is None:
+            fields["all_day"] = 1
     if args.optional is not None:
         fields["optional"] = int(args.optional)
     if args.going:
@@ -700,6 +771,13 @@ def cmd_list_events(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         params.append(args.status)
     else:
         clauses.append("status = 'active'")
+    if args.kind:
+        require_enum("kind", args.kind, EVENT_KINDS)
+        clauses.append("kind = ?")
+        params.append(args.kind)
+    if args.source:
+        clauses.append("source = ?")
+        params.append(args.source)
     day_from = parse_date(args.date).strftime("%Y-%m-%d") if args.date else None
     range_from = parse_date(args.start).strftime("%Y-%m-%d") if args.start else day_from
     range_to = parse_date(args.end).strftime("%Y-%m-%d") if args.end else day_from
@@ -717,6 +795,296 @@ def cmd_list_events(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         for r in rows
     ]
     emit(args, rows, "\n".join(lines) if lines else "(没有日程)")
+
+
+def http_get_text(urls: list[str] | tuple[str, ...]) -> str:
+    last: Exception | None = None
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "reminder-sync/1.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.read().decode("utf-8")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = exc
+    raise SystemExit(f"拉不到数据: {last}")
+
+
+def collapse_named_days(days: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    parsed: list[tuple[date, str, bool]] = []
+    for item in days:
+        try:
+            parsed.append((date.fromisoformat(item["date"][:10]), str(item["name"]), bool(item["isOffDay"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    parsed.sort()
+    groups: list[dict[str, Any]] = []
+    for day, name, off in parsed:
+        if groups:
+            prev = groups[-1]
+            if prev["name"] == name and prev["off"] == off and day == prev["end"] + timedelta(days=1):
+                prev["end"] = day
+                continue
+        groups.append({"name": name, "start": day, "end": day, "off": off})
+    return groups
+
+
+def upsert_sourced_event(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    title: str,
+    start_at: str,
+    end_at: str | None,
+    kind: str,
+    details: str | None,
+) -> str:
+    existing = conn.execute(
+        "SELECT id FROM events WHERE source = ? AND title = ? AND start_at = ?",
+        (source, title, start_at),
+    ).fetchone()
+    stamp = now_iso()
+    if existing:
+        conn.execute(
+            """UPDATE events SET end_at = ?, kind = ?, details = ?, all_day = 1, optional = 0,
+               status = 'active', updated_at = ? WHERE id = ?""",
+            (end_at, kind, details, stamp, existing["id"]),
+        )
+        return existing["id"]
+    return insert_event(
+        conn,
+        title=title,
+        details=details,
+        location=None,
+        start_at=start_at,
+        end_at=end_at,
+        all_day=1,
+        optional=0,
+        kind=kind,
+        status="active",
+        reminder_id=None,
+        source=source,
+        source_message=None,
+    )
+
+
+def cancel_missing_sourced(conn: sqlite3.Connection, source: str, keep_ids: set[str]) -> int:
+    rows = conn.execute(
+        "SELECT id FROM events WHERE source = ? AND status = 'active'",
+        (source,),
+    ).fetchall()
+    n = 0
+    stamp = now_iso()
+    for row in rows:
+        if row["id"] not in keep_ids:
+            conn.execute(
+                "UPDATE events SET status = 'cancelled', updated_at = ? WHERE id = ?",
+                (stamp, row["id"]),
+            )
+            n += 1
+    return n
+
+
+def read_cn_json(raw: str, year: int) -> dict[str, Any]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{year} 节假日 JSON 无效") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"{year} 节假日 JSON 无效")
+    return data
+
+
+def load_cn_year(year: int, *, refresh: bool = False) -> dict[str, Any] | None:
+    path = bundled_cn_path(year)
+    if not refresh:
+        if path.is_file():
+            return read_cn_json(path.read_text(encoding="utf-8"), year)
+        return None
+    try:
+        data = read_cn_json(http_get_text([u.format(year=year) for u in CN_HOLIDAY_URLS]), year)
+    except SystemExit:
+        if path.is_file():
+            return read_cn_json(path.read_text(encoding="utf-8"), year)
+        raise
+    if data.get("days"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "year": data.get("year", year),
+            "papers": data.get("papers") or [],
+            "source": "https://github.com/NateScarlet/holiday-cn",
+            "days": data["days"],
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return payload
+    return data
+
+
+def apply_cn_payloads(
+    conn: sqlite3.Connection,
+    payloads: list[dict[str, Any]],
+    *,
+    prune: bool,
+) -> tuple[int, int, list[int]]:
+    rows: list[dict[str, Any]] = []
+    empty: list[int] = []
+    for payload in payloads:
+        chunk = events_from_cn(payload)
+        year = payload.get("year")
+        if not chunk:
+            if isinstance(year, int):
+                empty.append(year)
+            continue
+        rows.extend(chunk)
+    keep: set[str] = set()
+    for row in rows:
+        keep.add(
+            upsert_sourced_event(
+                conn,
+                source="cn",
+                title=row["title"],
+                start_at=row["start_at"],
+                end_at=row["end_at"],
+                kind=row["kind"],
+                details=row["details"],
+            )
+        )
+    cancelled = cancel_missing_sourced(conn, "cn", keep) if prune else 0
+    return len(keep), cancelled, empty
+
+
+def seed_bundled_cn(conn: sqlite3.Connection) -> None:
+    payloads = []
+    for year in bundled_cn_years():
+        payload = load_cn_year(year, refresh=False)
+        if payload:
+            payloads.append(payload)
+    if payloads:
+        apply_cn_payloads(conn, payloads, prune=False)
+
+
+def events_from_cn(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    papers = payload.get("papers") or []
+    origin = papers[0] if papers else "https://github.com/NateScarlet/holiday-cn"
+    year = payload.get("year")
+    details = f"国务院放假安排 {year}；{origin}"
+    rows: list[dict[str, Any]] = []
+    for group in collapse_named_days(payload.get("days") or []):
+        start = group["start"].isoformat()
+        end = group["end"].isoformat() if group["end"] != group["start"] else None
+        if group["off"]:
+            rows.append(
+                {
+                    "title": group["name"],
+                    "kind": "holiday",
+                    "start_at": start,
+                    "end_at": end,
+                    "details": details,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "title": f"补班（{group['name']}）",
+                    "kind": "marker",
+                    "start_at": start,
+                    "end_at": end,
+                    "details": details,
+                }
+            )
+    return rows
+
+
+def events_from_file(path: Path) -> tuple[str, list[dict[str, Any]]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"读不了 {path}: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("days"), list):
+        raise SystemExit(f"{path} 需要 {{source, origin, days: [...]}}")
+    source = str(data.get("source") or "file")
+    origin = data.get("origin")
+    rows: list[dict[str, Any]] = []
+    for item in data["days"]:
+        if not isinstance(item, dict) or not item.get("title") or not item.get("start"):
+            continue
+        kind = item.get("kind") or "marker"
+        if kind not in EVENT_KINDS or kind == "session":
+            kind = "marker"
+        start = parse_when(str(item["start"]))
+        end = parse_when(str(item["end"])) if item.get("end") else None
+        details = item.get("details") or origin
+        rows.append(
+            {
+                "title": str(item["title"]),
+                "kind": kind,
+                "start_at": start,
+                "end_at": end,
+                "details": details,
+            }
+        )
+    return source, rows
+
+
+def cmd_sync_days(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
+    source_name = args.source
+    if source_name == "cn":
+        refresh = bool(getattr(args, "refresh", False))
+        years = args.year or (None if refresh else bundled_cn_years())
+        if not years:
+            now = local_now()
+            years = [now.year, now.year + 1]
+        payloads = []
+        missing: list[int] = []
+        for year in years:
+            payload = load_cn_year(year, refresh=refresh)
+            if payload is None:
+                missing.append(year)
+            else:
+                payloads.append(payload)
+        upserted, cancelled, empty = apply_cn_payloads(conn, payloads, prune=True)
+        empty = sorted(set(empty + missing))
+        source = "cn"
+        note = "data/cn（仓库预填）" if not refresh else "holiday-cn 刷新"
+        conn.commit()
+        empty_note = f"；{', '.join(str(y) for y in empty)} 年还没公布" if empty else ""
+        emit(
+            args,
+            {
+                "source": source,
+                "upserted": upserted,
+                "cancelled": cancelled,
+                "empty_years": empty,
+                "from": note,
+            },
+            f"已同步 {source}  {upserted} 条{empty_note}"
+            + (f"；收掉过期 {cancelled} 条" if cancelled else ""),
+        )
+        return
+    if source_name != "file":
+        raise SystemExit("sync-days --source 只能是 cn 或 file")
+    if not args.path:
+        raise SystemExit("sync-days --source file 需要 --path")
+    source, rows = events_from_file(Path(args.path).expanduser())
+    keep: set[str] = set()
+    for row in rows:
+        keep.add(
+            upsert_sourced_event(
+                conn,
+                source=source,
+                title=row["title"],
+                start_at=row["start_at"],
+                end_at=row["end_at"],
+                kind=row["kind"],
+                details=row["details"],
+            )
+        )
+    cancelled = cancel_missing_sourced(conn, source, keep)
+    conn.commit()
+    emit(
+        args,
+        {"source": source, "upserted": len(keep), "cancelled": cancelled, "from": args.path},
+        f"已同步 {source}  {len(keep)} 条" + (f"；收掉过期 {cancelled} 条" if cancelled else ""),
+    )
 
 
 def cmd_add_intention(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
@@ -1259,7 +1627,9 @@ def format_today(payload: dict[str, Any]) -> str:
     events = payload.get("events") or []
     if events:
         lines.extend(["", "## 日历"])
-        for e in events:
+        days = [e for e in events if is_day_event(e)]
+        sessions = [e for e in events if not is_day_event(e)]
+        for e in days + sessions:
             loc = f"  @ {e['location']}" if e.get("location") else ""
             lines.append(f"- {format_event_span(e)}  {e['title']}  [{event_label(e)}]{loc}")
     reminders = payload["reminders"]
@@ -1358,6 +1728,8 @@ def build_parser() -> argparse.ArgumentParser:
     ae.add_argument("--location")
     ae.add_argument("--details")
     ae.add_argument("--all-day", action="store_true")
+    ae.add_argument("--kind", help="session 场次 / holiday 节日 / break 假期 / marker 特殊日子")
+    ae.add_argument("--source", default="user", help="user / cn / cityu-dg")
     ae.add_argument("--optional", type=int, choices=(0, 1))
     ae.add_argument("--going", action="store_true", help="主人说要去，记成必去而不是可选")
     ae.add_argument("--status", default="active")
@@ -1374,6 +1746,7 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--location")
     se.add_argument("--details")
     se.add_argument("--all-day", type=int, choices=(0, 1))
+    se.add_argument("--kind", help="session / holiday / break / marker")
     se.add_argument("--optional", type=int, choices=(0, 1))
     se.add_argument("--going", action="store_true")
     se.add_argument("--status", help="active/cancelled/done")
@@ -1382,6 +1755,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     le = sub.add_parser("list-events", help="列出日历场次")
     le.add_argument("--status", help="active/cancelled/done/all，默认 active")
+    le.add_argument("--kind", help="session/holiday/break/marker")
+    le.add_argument("--source", help="user/cn/cityu-dg")
     le.add_argument("--date", help="只看这一天")
     le.add_argument("--start", help="范围起点 YYYY-MM-DD")
     le.add_argument("--end", help="范围终点 YYYY-MM-DD")
@@ -1448,6 +1823,12 @@ def build_parser() -> argparse.ArgumentParser:
     lns = sub.add_parser("list-nudges")
     lns.add_argument("--intention-id")
     lns.add_argument("--limit", type=int, default=20)
+
+    sd = sub.add_parser("sync-days", help="从官方源刷新节日/假期")
+    sd.add_argument("--source", default="cn", help="cn=仓库预填的法定假；file=本地 JSON")
+    sd.add_argument("--year", action="append", type=int, help="可重复；默认用 data/cn 里已有的年份")
+    sd.add_argument("--refresh", action="store_true", help="联网拉取国务院数据并写回 data/cn")
+    sd.add_argument("--path", help="--source file 时的 JSON 路径")
     return p
 
 
@@ -1463,6 +1844,7 @@ COMMANDS = {
     "add-event": cmd_add_event,
     "set-event": cmd_set_event,
     "list-events": cmd_list_events,
+    "sync-days": cmd_sync_days,
     "add-intention": cmd_add_intention,
     "set-intention": cmd_set_intention,
     "mention-intention": cmd_mention_intention,
