@@ -8,9 +8,10 @@ Durable state belongs in `~/.reminder/`, not in skill files and not as many flat
 
 Tables:
 
-- `reminders`: hard reminders mirrored from host scheduler jobs.
+- `events`: local calendar. Start/end/location; `optional=1` means go-or-not. May point at a `reminder_id` for the start-time ping.
+- `reminders`: hard reminders mirrored from host scheduler jobs. `kind` is `action` (must-do), `event` (legacy ping; auto-copied into `events`), or `deadline` (due time; remind to start earlier).
 - `life_anchors`: background blocks such as meals, sleep, class, commute, busy periods, and good activity windows. These usually do **not** send messages by themselves.
-- `intentions`: long-running fuzzy goals such as fitness or study, with strength (`weak`/`medium`/`strong`), weekly target, minimum action, preferred window, and proactive-nudge permission.
+- `intentions`: long-running fuzzy goals such as fitness or study, with strength (`weak`/`medium`/`strong`), weekly target, preferred window, and proactive-nudge permission.
 - `nudge_history`: every weak prompt and user response/outcome (`sent`, `accepted`, `completed`, `rejected`, `annoyed`, `skip`, etc.).
 
 ## Scanner pattern
@@ -23,7 +24,6 @@ Decision rules:
 2. Only consider intentions inside their preferred time window.
 3. Respect weekly targets; if enough accepted/completed nudges happened this week, stay silent.
 4. Cool down after any recent sent/positive nudge, and cool down longer after rejected/annoyed/skip.
-5. For weak intentions, phrase as readiness check, not command: “现在适合推进 X 吗？最低标准：Y。不想做也没关系。”
 
 ## Schedule format
 
@@ -31,9 +31,4 @@ Decision rules:
 
 ## User-facing behavior
 
-When the user dumps a schedule/policy notice, convert it into:
-
-- current next action;
-- start-prep reminders before opening windows/deadlines;
-- deadline review reminders near the end;
-- concise confirmation with times, not internal job IDs.
+When the user dumps a schedule/policy notice, persist each timed item with `add-event` and ping at start time. Do not wait for “提醒我”. Overlapping optional sessions all get kept. Only `set-event --going` if the user says they will go. `deadline` items still get a start-prep ping; calendar events do not. Confirm with times, not internal job IDs. Behavior lives in `SKILL.md` §事项类型.

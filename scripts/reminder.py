@@ -16,9 +16,16 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "3"
 
 REMINDER_STATUSES = ("active", "paused", "done", "cancelled", "snoozed")
+REMINDER_KINDS = ("action", "event", "deadline")
+REMINDER_KIND_SECTIONS = (
+    ("action", "必做"),
+    ("deadline", "截止"),
+    ("event", "可选（到点叫一声，去不去都行）"),
+)
+EVENT_STATUSES = ("active", "cancelled", "done")
 INTENTION_STATUSES = ("open", "paused", "dropped", "done")
 STRENGTHS = ("weak", "medium", "strong")
 ANCHOR_KINDS = ("meal", "sleep", "class", "commute", "busy", "free")
@@ -39,6 +46,7 @@ CREATE TABLE IF NOT EXISTS reminders (
   title TEXT NOT NULL,
   details TEXT,
   status TEXT NOT NULL DEFAULT 'active',
+  kind TEXT NOT NULL DEFAULT 'action',
   remind_at TEXT,
   due_at TEXT,
   repeat_rule TEXT,
@@ -89,11 +97,30 @@ CREATE TABLE IF NOT EXISTS nudge_history (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  details TEXT,
+  location TEXT,
+  start_at TEXT NOT NULL,
+  end_at TEXT,
+  all_day INTEGER NOT NULL DEFAULT 0,
+  optional INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',
+  reminder_id TEXT,
+  source_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
 CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at);
 CREATE INDEX IF NOT EXISTS idx_intentions_status ON intentions(status);
 CREATE INDEX IF NOT EXISTS idx_anchors_active ON life_anchors(active);
 CREATE INDEX IF NOT EXISTS idx_nudge_intention ON nudge_history(intention_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_at);
+CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+CREATE INDEX IF NOT EXISTS idx_events_reminder ON events(reminder_id);
 """
 
 
@@ -244,18 +271,71 @@ def require_enum(name: str, value: str | None, allowed: tuple[str, ...], default
     return value
 
 
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def reminder_status_to_event(status: str | None) -> str:
+    if status in ("cancelled", "done"):
+        return status
+    return "active"
+
+
+def ensure_event_for_reminder(conn: sqlite3.Connection, reminder_id: str) -> str | None:
+    rem = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
+    if rem is None or rem["kind"] != "event":
+        return None
+    existing = conn.execute("SELECT id FROM events WHERE reminder_id = ?", (reminder_id,)).fetchone()
+    if existing:
+        return existing["id"]
+    start = rem["remind_at"] or rem["due_at"]
+    if not start:
+        return None
+    item_id = new_id("e")
+    stamp = now_iso()
+    conn.execute(
+        """INSERT INTO events(
+            id, title, details, location, start_at, end_at, all_day, optional,
+            status, reminder_id, source_message, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, ?, 0, 1, ?, ?, ?, ?, ?)""",
+        (
+            item_id,
+            rem["title"],
+            rem["details"],
+            start,
+            rem["due_at"],
+            reminder_status_to_event(rem["status"]),
+            reminder_id,
+            rem["source_message"],
+            rem["created_at"] or stamp,
+            stamp,
+        ),
+    )
+    return item_id
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    cols = table_columns(conn, "reminders")
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE reminders ADD COLUMN kind TEXT NOT NULL DEFAULT 'action'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_kind ON reminders(kind)")
+    for row in conn.execute("SELECT id FROM reminders WHERE kind = 'event'"):
+        ensure_event_for_reminder(conn, row["id"])
+    stamp = now_iso()
+    conn.execute(
+        "INSERT INTO schema_meta(key, value, updated_at) VALUES(?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        ("version", SCHEMA_VERSION, stamp),
+    )
+
+
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
-    stamp = now_iso()
-    conn.execute(
-        "INSERT INTO schema_meta(key, value, updated_at) VALUES(?, ?, ?) "
-        "ON CONFLICT(key) DO NOTHING",
-        ("version", SCHEMA_VERSION, stamp),
-    )
+    migrate(conn)
     conn.commit()
     return conn
 
@@ -289,6 +369,7 @@ def cmd_status(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
     version = conn.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()[0]
     counts = {
         "reminders": conn.execute("SELECT COUNT(*) FROM reminders").fetchone()[0],
+        "events": conn.execute("SELECT COUNT(*) FROM events").fetchone()[0],
         "intentions": conn.execute("SELECT COUNT(*) FROM intentions").fetchone()[0],
         "life_anchors": conn.execute("SELECT COUNT(*) FROM life_anchors").fetchone()[0],
         "nudge_history": conn.execute("SELECT COUNT(*) FROM nudge_history").fetchone()[0],
@@ -304,17 +385,19 @@ def cmd_add_reminder(conn: sqlite3.Connection, args: argparse.Namespace) -> None
     item_id = new_id("r")
     stamp = now_iso()
     status = require_enum("status", args.status, REMINDER_STATUSES, "active")
+    kind = require_enum("kind", args.kind, REMINDER_KINDS, "action")
     job_kind = require_enum("job-kind", args.job_kind, JOB_KINDS) if args.job_kind else None
     conn.execute(
         """INSERT INTO reminders(
-            id, title, details, status, remind_at, due_at, repeat_rule,
+            id, title, details, status, kind, remind_at, due_at, repeat_rule,
             job_id, job_kind, intention_id, source_message, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item_id,
             args.title,
             args.details,
             status,
+            kind,
             parse_when(args.remind_at),
             parse_when(args.due_at),
             args.repeat_rule,
@@ -327,8 +410,11 @@ def cmd_add_reminder(conn: sqlite3.Connection, args: argparse.Namespace) -> None
         ),
     )
     conn.commit()
+    if kind == "event":
+        ensure_event_for_reminder(conn, item_id)
+        conn.commit()
     row = row_dict(get_one(conn, "reminders", item_id))
-    emit(args, row, f"reminder {item_id}  {args.title}")
+    emit(args, row, f"reminder {item_id}  [{kind}]  {args.title}")
 
 
 def cmd_set_reminder(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
@@ -340,6 +426,8 @@ def cmd_set_reminder(conn: sqlite3.Connection, args: argparse.Namespace) -> None
         fields["details"] = args.details
     if args.status is not None:
         fields["status"] = require_enum("status", args.status, REMINDER_STATUSES)
+    if args.kind is not None:
+        fields["kind"] = require_enum("kind", args.kind, REMINDER_KINDS)
     if args.remind_at is not None:
         fields["remind_at"] = parse_when(args.remind_at)
     if args.due_at is not None:
@@ -361,31 +449,274 @@ def cmd_set_reminder(conn: sqlite3.Connection, args: argparse.Namespace) -> None
     conn.execute(f"UPDATE reminders SET {assignments} WHERE id = ?", [*fields.values(), args.id])
     conn.commit()
     row = row_dict(get_one(conn, "reminders", args.id))
-    emit(args, row, f"reminder {args.id}  {row['title']}  [{row['status']}]")
+    if row["kind"] == "event":
+        event_id = ensure_event_for_reminder(conn, args.id)
+        if event_id:
+            ev_fields: dict[str, Any] = {"updated_at": now_iso()}
+            if "title" in fields:
+                ev_fields["title"] = fields["title"]
+            if "details" in fields:
+                ev_fields["details"] = fields["details"]
+            if "source_message" in fields:
+                ev_fields["source_message"] = fields["source_message"]
+            if "remind_at" in fields or "due_at" in fields:
+                ev_fields["start_at"] = row["remind_at"] or row["due_at"]
+                ev_fields["end_at"] = row["due_at"]
+            if "status" in fields:
+                ev_fields["status"] = reminder_status_to_event(row["status"])
+            sets = ", ".join(f"{k} = ?" for k in ev_fields)
+            conn.execute(f"UPDATE events SET {sets} WHERE id = ?", [*ev_fields.values(), event_id])
+            conn.commit()
+    emit(args, row, f"reminder {args.id}  [{row['kind']}/{row['status']}]  {row['title']}")
 
 
 def cmd_list_reminders(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
+    clauses: list[str] = []
+    params: list[Any] = []
     if args.status == "all":
-        rows = conn.execute("SELECT * FROM reminders ORDER BY remind_at IS NULL, remind_at, created_at").fetchall()
+        pass
     elif args.status:
         require_enum("status", args.status, REMINDER_STATUSES)
-        rows = conn.execute(
-            "SELECT * FROM reminders WHERE status = ? ORDER BY remind_at IS NULL, remind_at, created_at",
-            (args.status,),
-        ).fetchall()
+        clauses.append("status = ?")
+        params.append(args.status)
     else:
-        rows = conn.execute(
-            "SELECT * FROM reminders WHERE status NOT IN ('done', 'cancelled') "
-            "ORDER BY remind_at IS NULL, remind_at, created_at"
-        ).fetchall()
+        clauses.append("status NOT IN ('done', 'cancelled')")
+    if args.kind:
+        require_enum("kind", args.kind, REMINDER_KINDS)
+        clauses.append("kind = ?")
+        params.append(args.kind)
+    sql = "SELECT * FROM reminders"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY remind_at IS NULL, remind_at, created_at"
+    rows = conn.execute(sql, params).fetchall()
     items = [row_dict(r) for r in rows]
     lines = [
-        f"{r['id']}  [{r['status']}]  {r['title']}"
+        f"{r['id']}  [{r.get('kind') or 'action'}/{r['status']}]  {r['title']}"
         + (f"  {r['remind_at']}" if r["remind_at"] else "")
         + (f"  due {r['due_at']}" if r["due_at"] else "")
         for r in items
     ]
     emit(args, items, "\n".join(lines) if lines else "(没有提醒)")
+
+
+def event_label(row: dict[str, Any]) -> str:
+    if row["status"] != "active":
+        return row["status"]
+    return "可选" if row.get("optional", 1) else "要去"
+
+
+def format_event_span(row: dict[str, Any]) -> str:
+    if row.get("all_day"):
+        start = date_of(row["start_at"]) or "?"
+        end = date_of(row["end_at"])
+        if end and end != start:
+            return f"{start}–{end}"
+        return start
+    start = row["start_at"] or "?"
+    end = row["end_at"]
+    if end and date_of(end) == date_of(start):
+        return f"{start[11:16]}–{end[11:16]}"
+    if end:
+        return f"{start}–{end}"
+    if "T" in start:
+        return start[11:16]
+    return start
+
+
+def spans_day(start_at: str | None, end_at: str | None, day_key: str) -> bool:
+    start = date_of(start_at)
+    if not start:
+        return False
+    end = date_of(end_at) or start
+    return start <= day_key <= end
+
+
+def insert_event(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    details: str | None,
+    location: str | None,
+    start_at: str,
+    end_at: str | None,
+    all_day: int,
+    optional: int,
+    status: str,
+    reminder_id: str | None,
+    source_message: str | None,
+    created_at: str | None = None,
+) -> str:
+    item_id = new_id("e")
+    stamp = now_iso()
+    created = created_at or stamp
+    conn.execute(
+        """INSERT INTO events(
+            id, title, details, location, start_at, end_at, all_day, optional,
+            status, reminder_id, source_message, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            item_id,
+            title,
+            details,
+            location,
+            start_at,
+            end_at,
+            all_day,
+            optional,
+            status,
+            reminder_id,
+            source_message,
+            created,
+            stamp,
+        ),
+    )
+    return item_id
+
+
+def cmd_add_event(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
+    start_at = parse_when(args.start_at)
+    if not start_at:
+        raise SystemExit("add-event 需要 --start-at")
+    end_at = parse_when(args.end_at)
+    status = require_enum("status", args.status, EVENT_STATUSES, "active")
+    optional = 0 if args.going else 1
+    if args.optional is not None:
+        optional = int(args.optional)
+    reminder_id = args.reminder_id
+    if args.job_id and not reminder_id:
+        reminder_id = new_id("r")
+        stamp = now_iso()
+        kind = "action" if optional == 0 else "event"
+        conn.execute(
+            """INSERT INTO reminders(
+                id, title, details, status, kind, remind_at, due_at, repeat_rule,
+                job_id, job_kind, intention_id, source_message, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?)""",
+            (
+                reminder_id,
+                args.title,
+                args.details,
+                "active" if status == "active" else status,
+                kind,
+                start_at,
+                end_at,
+                args.job_id,
+                require_enum("job-kind", args.job_kind, JOB_KINDS) if args.job_kind else "timer",
+                args.source_message,
+                stamp,
+                stamp,
+            ),
+        )
+    elif reminder_id:
+        get_one(conn, "reminders", reminder_id)
+    item_id = insert_event(
+        conn,
+        title=args.title,
+        details=args.details,
+        location=args.location,
+        start_at=start_at,
+        end_at=end_at,
+        all_day=1 if args.all_day else 0,
+        optional=optional,
+        status=status,
+        reminder_id=reminder_id,
+        source_message=args.source_message,
+    )
+    conn.commit()
+    row = row_dict(get_one(conn, "events", item_id))
+    loc = f"  @ {row['location']}" if row["location"] else ""
+    emit(args, row, f"event {item_id}  [{event_label(row)}]  {format_event_span(row)}  {args.title}{loc}")
+
+
+def cmd_set_event(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
+    get_one(conn, "events", args.id)
+    fields: dict[str, Any] = {}
+    if args.title is not None:
+        fields["title"] = args.title
+    if args.details is not None:
+        fields["details"] = args.details
+    if args.location is not None:
+        fields["location"] = args.location
+    if args.start_at is not None:
+        fields["start_at"] = parse_when(args.start_at)
+    if args.end_at is not None:
+        fields["end_at"] = parse_when(args.end_at)
+    if args.all_day is not None:
+        fields["all_day"] = int(args.all_day)
+    if args.optional is not None:
+        fields["optional"] = int(args.optional)
+    if args.going:
+        fields["optional"] = 0
+    if args.status is not None:
+        fields["status"] = require_enum("status", args.status, EVENT_STATUSES)
+    if args.reminder_id is not None:
+        if args.reminder_id:
+            get_one(conn, "reminders", args.reminder_id)
+        fields["reminder_id"] = args.reminder_id or None
+    if args.source_message is not None:
+        fields["source_message"] = args.source_message
+    if not fields:
+        raise SystemExit("set-event 需要至少一个要改的字段")
+    fields["updated_at"] = now_iso()
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE events SET {assignments} WHERE id = ?", [*fields.values(), args.id])
+    conn.commit()
+    row = row_dict(get_one(conn, "events", args.id))
+    if row["reminder_id"]:
+        rem_fields: dict[str, Any] = {"updated_at": now_iso()}
+        if "title" in fields:
+            rem_fields["title"] = row["title"]
+        if "details" in fields:
+            rem_fields["details"] = row["details"]
+        if "start_at" in fields:
+            rem_fields["remind_at"] = row["start_at"]
+        if "end_at" in fields:
+            rem_fields["due_at"] = row["end_at"]
+        if "status" in fields:
+            rem_fields["status"] = row["status"] if row["status"] in REMINDER_STATUSES else "cancelled"
+        if "optional" in fields:
+            rem_fields["kind"] = "action" if row["optional"] == 0 else "event"
+        if len(rem_fields) > 1:
+            sets = ", ".join(f"{k} = ?" for k in rem_fields)
+            conn.execute(
+                f"UPDATE reminders SET {sets} WHERE id = ?",
+                [*rem_fields.values(), row["reminder_id"]],
+            )
+            conn.commit()
+            row = row_dict(get_one(conn, "events", args.id))
+    loc = f"  @ {row['location']}" if row["location"] else ""
+    emit(args, row, f"event {args.id}  [{event_label(row)}]  {row['title']}{loc}")
+
+
+def cmd_list_events(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if args.status == "all":
+        pass
+    elif args.status:
+        require_enum("status", args.status, EVENT_STATUSES)
+        clauses.append("status = ?")
+        params.append(args.status)
+    else:
+        clauses.append("status = 'active'")
+    day_from = parse_date(args.date).strftime("%Y-%m-%d") if args.date else None
+    range_from = parse_date(args.start).strftime("%Y-%m-%d") if args.start else day_from
+    range_to = parse_date(args.end).strftime("%Y-%m-%d") if args.end else day_from
+    sql = "SELECT * FROM events"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY start_at IS NULL, start_at, created_at"
+    rows = [row_dict(r) for r in conn.execute(sql, params).fetchall()]
+    if range_from:
+        end_key = range_to or range_from
+        rows = [r for r in rows if r["start_at"] and date_of(r["start_at"]) <= end_key and (date_of(r["end_at"]) or date_of(r["start_at"])) >= range_from]
+    lines = [
+        f"{r['id']}  [{event_label(r)}]  {format_event_span(r)}  {r['title']}"
+        + (f"  @ {r['location']}" if r["location"] else "")
+        for r in rows
+    ]
+    emit(args, rows, "\n".join(lines) if lines else "(没有日程)")
 
 
 def cmd_add_intention(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
@@ -491,7 +822,6 @@ def cmd_list_intentions(conn: sqlite3.Connection, args: argparse.Namespace) -> N
     items = [row_dict(r) for r in rows]
     lines = [
         f"{r['id']}  [{r['status']}/{r['strength']}]  {r['title']}"
-        + (f"  最低:{r['min_action']}" if r["min_action"] else "")
         for r in items
     ]
     emit(args, items, "\n".join(lines) if lines else "(没有意愿)")
@@ -752,9 +1082,6 @@ def skip_this_day(intention_id: str, now: datetime) -> bool:
 
 def compose_nudge(intention: dict[str, Any]) -> str:
     title = intention["title"]
-    mini = intention["min_action"]
-    if mini:
-        return f"主人，现在适合推进一下「{title}」吗？最低标准：{mini}。不想做也没关系。"
     return f"主人，突然想起你说过想「{title}」。有空动一下就行，不想做也没关系。"
 
 
@@ -872,11 +1199,20 @@ def cmd_today(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
     for row in conn.execute("SELECT * FROM life_anchors WHERE active = 1 ORDER BY start_time IS NULL, start_time"):
         if weekday_matches(row["weekdays"], day):
             anchors.append(row_dict(row))
+    events = []
+    for row in conn.execute(
+        "SELECT * FROM events WHERE status = 'active' ORDER BY start_at IS NULL, start_at"
+    ):
+        if spans_day(row["start_at"], row["end_at"], day_key):
+            events.append(row_dict(row))
+    linked = {e["reminder_id"] for e in events if e.get("reminder_id")}
     reminders = []
     for row in conn.execute(
         "SELECT * FROM reminders WHERE status NOT IN ('done', 'cancelled') "
         "ORDER BY remind_at IS NULL, remind_at"
     ):
+        if row["id"] in linked:
+            continue
         if date_of(row["remind_at"]) == day_key or date_of(row["due_at"]) == day_key:
             reminders.append(row_dict(row))
         elif row["repeat_rule"] and weekday_matches("daily", day):
@@ -903,6 +1239,7 @@ def cmd_today(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         "date": day_key,
         "weekday": WEEKDAY_ZH[day.weekday()],
         "anchors": anchors,
+        "events": events,
         "reminders": reminders,
         "intentions": intentions,
     }
@@ -919,14 +1256,35 @@ def format_today(payload: dict[str, Any]) -> str:
             )
     else:
         lines.append("- （还没有日常锚点）")
-    lines.extend(["", "## 硬提醒"])
-    if payload["reminders"]:
-        for r in payload["reminders"]:
-            when = r["remind_at"] or "未定时"
-            due = f"  DDL {r['due_at']}" if r["due_at"] else ""
-            lines.append(f"- {when}  {r['title']}  [{r['status']}]{due}")
+    events = payload.get("events") or []
+    if events:
+        lines.extend(["", "## 日历"])
+        for e in events:
+            loc = f"  @ {e['location']}" if e.get("location") else ""
+            lines.append(f"- {format_event_span(e)}  {e['title']}  [{event_label(e)}]{loc}")
+    reminders = payload["reminders"]
+    if reminders:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for r in reminders:
+            grouped.setdefault(r.get("kind") or "action", []).append(r)
+        known = {key for key, _ in REMINDER_KIND_SECTIONS}
+        for key, title in REMINDER_KIND_SECTIONS:
+            items = grouped.get(key) or []
+            if not items:
+                continue
+            lines.extend(["", f"## {title}"])
+            for r in items:
+                when = r["remind_at"] or "未定时"
+                due = f"  DDL {r['due_at']}" if r["due_at"] else ""
+                lines.append(f"- {when}  {r['title']}  [{r['status']}]{due}")
+        extras = [r for r in reminders if (r.get("kind") or "action") not in known]
+        if extras:
+            lines.extend(["", "## 其他提醒"])
+            for r in extras:
+                when = r["remind_at"] or "未定时"
+                lines.append(f"- {when}  {r['title']}  [{r.get('kind')}/{r['status']}]")
     else:
-        lines.append("- （今天没有硬提醒）")
+        lines.extend(["", "## 必做", "- （今天没有硬提醒）"])
     lines.extend(["", "## 意愿"])
     if payload["intentions"]:
         for i in payload["intentions"]:
@@ -934,9 +1292,8 @@ def format_today(payload: dict[str, Any]) -> str:
             progress = f"本周 {i['week_completed']}/{target}" if target else f"本周完成 {i['week_completed']}"
             last_m = i["last_mentioned_at"][:10] if i["last_mentioned_at"] else "无"
             last_c = i["last_completed_at"][:10] if i["last_completed_at"] else "无"
-            mini = i["min_action"] or "（未设最低动作）"
             lines.append(
-                f"- {i['title']}（{i['strength']}）：最低 {mini}；{progress}；上次提到 {last_m}；上次完成 {last_c}"
+                f"- {i['title']}（{i['strength']}）：{progress}；上次提到 {last_m}；上次完成 {last_c}"
             )
     else:
         lines.append("- （还没有记下的意愿）")
@@ -952,7 +1309,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="创建库（其他命令也会自动建表）")
     sub.add_parser("status", help="路径、版本、条数")
 
-    t = sub.add_parser("today", help="今天的背景 / 硬提醒 / 意愿")
+    t = sub.add_parser("today", help="今天的背景 / 日历 / 必做 / 截止 / 意愿")
     t.add_argument("--date", help="YYYY-MM-DD，默认今天")
 
     sc = sub.add_parser("scan", help="判断现在该不该轻轻叫一声")
@@ -967,6 +1324,7 @@ def build_parser() -> argparse.ArgumentParser:
     ar.add_argument("--title", required=True)
     ar.add_argument("--details")
     ar.add_argument("--status", default="active")
+    ar.add_argument("--kind", default="action", help="action 必做 / event 可选到点叫 / deadline 截止")
     ar.add_argument("--remind-at")
     ar.add_argument("--due-at")
     ar.add_argument("--repeat-rule")
@@ -980,6 +1338,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--title")
     sr.add_argument("--details")
     sr.add_argument("--status")
+    sr.add_argument("--kind", help="action / event / deadline")
     sr.add_argument("--remind-at")
     sr.add_argument("--due-at")
     sr.add_argument("--repeat-rule")
@@ -990,6 +1349,42 @@ def build_parser() -> argparse.ArgumentParser:
 
     lr = sub.add_parser("list-reminders", help="列出硬提醒")
     lr.add_argument("--status", help="active/paused/done/cancelled/snoozed/all，默认不含 done/cancelled")
+    lr.add_argument("--kind", help="action/event/deadline")
+
+    ae = sub.add_parser("add-event", help="记下一条日历场次")
+    ae.add_argument("--title", required=True)
+    ae.add_argument("--start-at", required=True)
+    ae.add_argument("--end-at")
+    ae.add_argument("--location")
+    ae.add_argument("--details")
+    ae.add_argument("--all-day", action="store_true")
+    ae.add_argument("--optional", type=int, choices=(0, 1))
+    ae.add_argument("--going", action="store_true", help="主人说要去，记成必去而不是可选")
+    ae.add_argument("--status", default="active")
+    ae.add_argument("--job-id", help="到点轻喊的调度 id；有则同时写一条 kind=event 提醒")
+    ae.add_argument("--job-kind")
+    ae.add_argument("--reminder-id")
+    ae.add_argument("--source-message")
+
+    se = sub.add_parser("set-event", help="改日历场次")
+    se.add_argument("id")
+    se.add_argument("--title")
+    se.add_argument("--start-at")
+    se.add_argument("--end-at")
+    se.add_argument("--location")
+    se.add_argument("--details")
+    se.add_argument("--all-day", type=int, choices=(0, 1))
+    se.add_argument("--optional", type=int, choices=(0, 1))
+    se.add_argument("--going", action="store_true")
+    se.add_argument("--status", help="active/cancelled/done")
+    se.add_argument("--reminder-id")
+    se.add_argument("--source-message")
+
+    le = sub.add_parser("list-events", help="列出日历场次")
+    le.add_argument("--status", help="active/cancelled/done/all，默认 active")
+    le.add_argument("--date", help="只看这一天")
+    le.add_argument("--start", help="范围起点 YYYY-MM-DD")
+    le.add_argument("--end", help="范围终点 YYYY-MM-DD")
 
     ai = sub.add_parser("add-intention", help="记下一条意愿")
     ai.add_argument("--title", required=True)
@@ -1065,6 +1460,9 @@ COMMANDS = {
     "add-reminder": cmd_add_reminder,
     "set-reminder": cmd_set_reminder,
     "list-reminders": cmd_list_reminders,
+    "add-event": cmd_add_event,
+    "set-event": cmd_set_event,
+    "list-events": cmd_list_events,
     "add-intention": cmd_add_intention,
     "set-intention": cmd_set_intention,
     "mention-intention": cmd_mention_intention,
