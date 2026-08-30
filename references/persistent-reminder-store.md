@@ -63,7 +63,7 @@ python3 scripts/reminder.py log-nudge --intention-id i_xxxxxxxx --outcome skip
 
 `outcome`：`sent` / `accepted` / `completed` / `rejected` / `annoyed` / `skip`。
 
-`today` 会先列当天日历，再按必做 / 截止列出其余硬提醒，并带当天锚点和未关闭意愿。不要把「本周 0/3」说成责备。问「明天有啥」时用 `--date`。
+`today` 会先列当天日历，再按必做 / 截止列出其余硬提醒，并带当天锚点和未关闭意愿。不要把「本周 0/3」说成责备。问「明天有啥」时先按 `SKILL.md` 对话流程第 1 步定日子：夜深过零点用 `today`（不要 `--date` 下一天）；白天醒后问明天才 `--date` 下一天。
 
 轻扫描（该叫才叫，一天最多一声，时刻每天不同）：
 

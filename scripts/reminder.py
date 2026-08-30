@@ -26,7 +26,7 @@ REMINDER_KINDS = ("action", "event", "deadline")
 REMINDER_KIND_SECTIONS = (
     ("action", "必做"),
     ("deadline", "截止"),
-    ("event", "可选（到点叫一声，去不去都行）"),
+    ("event", "可选"),
 )
 EVENT_STATUSES = ("active", "cancelled", "done")
 EVENT_KINDS = ("session", "holiday", "break", "marker")
@@ -1782,9 +1782,13 @@ def skip_this_day(intention_id: str, now: datetime) -> bool:
     return digest_int(now.date().isoformat(), intention_id, "skip") % 100 < SKIP_DAY_PERCENT
 
 
-def compose_nudge(intention: dict[str, Any]) -> str:
-    title = intention["title"]
-    return f"主人，突然想起你说过想「{title}」。有空动一下就行，不想做也没关系。"
+def compose_nudge(intention: dict[str, Any]) -> str | None:
+    action = (intention.get("min_action") or "").strip()
+    if not action:
+        return None
+    if action.startswith("主人"):
+        return action
+    return f"主人，{action}"
 
 
 def decide_scan(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
@@ -1821,8 +1825,11 @@ def decide_scan(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
             wait = COOLDOWN_HOURS.get(last["outcome"], 16)
             if last_at and (now - last_at) < timedelta(hours=wait):
                 continue
+        message = compose_nudge(item)
+        if not message:
+            continue
         item["week_completed"] = completed
-        item["message"] = compose_nudge(item)
+        item["message"] = message
         candidates.append(((now - slot).total_seconds(), item))
 
     if not candidates:
