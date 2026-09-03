@@ -11,7 +11,7 @@ python3 scripts/reminder.py today --date 2026-08-26
 python3 scripts/reminder.py list-events --date 2026-08-26
 ```
 
-日历场次（开始/结束/地点；默认可选。闹钟仍由宿主调度，用 `--job-id` 挂到点轻喊）。全国法定假日预填在 `data/cn/`，启动时写入本机库。学年历/生日不要进仓库：
+日历场次（开始/结束/地点；默认可选。到点喊仍由宿主调度，用 `--job-id` 挂到点轻喊）。全国法定假日预填在 `data/cn/`，启动时写入本机库。学年历/生日不要进仓库：
 
 ```bash
 python3 scripts/reminder.py add-event --title "破冰 综合楼三楼" --start-at "2026-08-26T14:00" --end-at "2026-08-26T16:00" --location "综合楼三楼" --job-id "<timer-id>"
@@ -28,7 +28,7 @@ python3 scripts/reminder.py set-event e_xxxxxxxx --going
 python3 scripts/reminder.py set-event e_xxxxxxxx --status cancelled
 ```
 
-硬提醒（闹钟仍由宿主调度；这里只镜像）。`--kind`：`action` 必做、`event` 可选到点叫（旧路径，会自动补一条日历）、`deadline` 截止；默认 `action`。新的场次用 `add-event`，不要只写 reminder。
+硬提醒（到点喊仍由宿主调度；这里只镜像）。`--kind`：`action` 必做、`event` 可选到点叫（旧路径，会自动补一条日历）、`deadline` 截止；默认 `action`。新的场次用 `add-event`，不要只写 reminder。
 
 ```bash
 python3 scripts/reminder.py add-reminder --title "准备提交材料" --kind deadline --remind-at "2026-08-26T09:00" --due-at "2026-08-26T15:00" --job-id "<timer-id>" --job-kind timer
@@ -36,7 +36,7 @@ python3 scripts/reminder.py list-reminders
 python3 scripts/reminder.py set-reminder r_xxxxxxxx --status done
 ```
 
-意愿（说过想做、还没变成闹钟的背景）：
+意愿（说过想做、还没排到点喊的背景）：
 
 ```bash
 python3 scripts/reminder.py add-intention --title "健身" --strength weak --weekly-target 3 --preferred-window "19:00-21:00"
