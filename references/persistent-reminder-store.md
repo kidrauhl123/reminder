@@ -65,12 +65,4 @@ python3 scripts/reminder.py log-nudge --intention-id i_xxxxxxxx --outcome skip
 
 `today` 会先列当天日历，再按必做 / 截止列出其余硬提醒，并带当天锚点和未关闭意愿。不要把「本周 0/3」说成责备。问「明天有啥」时先按 `SKILL.md` 对话流程第 1 步定日子：夜深过零点用 `today`（不要 `--date` 下一天）；白天醒后问明天才 `--date` 下一天。
 
-轻扫描（该叫才叫，一天最多一声，时刻每天不同）：
-
-```bash
-python3 scripts/reminder.py scan
-python3 scripts/reminder.py maybe-send --dry-run
-python3 scripts/reminder.py maybe-send
-```
-
-`maybe-send` 不该叫时不要打印任何内容，以免宿主把 stdout 发给用户。不要把扫描时刻或频率告诉用户。用户说「别再主动叫我」时停掉这个任务。
+不要挂后台循环扫描去「偶尔想起」。用户说「别再主动叫我」时，停掉该意愿已挂的到点消息，并 `set-intention --nudge-ok 0`。

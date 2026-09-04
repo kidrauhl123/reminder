@@ -4,17 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import sqlite3
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 import uuid
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -259,13 +257,6 @@ def load_tz():
     if name:
         return ZoneInfo(name)
     return datetime.now().astimezone().tzinfo
-
-
-def quiet_hours() -> tuple[str, str]:
-    raw = load_config().get("quiet_hours")
-    if isinstance(raw, (list, tuple)) and len(raw) == 2:
-        return (str(raw[0])[:5], str(raw[1])[:5])
-    return QUIET_HOURS
 
 
 def local_now() -> datetime:
@@ -1657,250 +1648,6 @@ def week_start(day: datetime) -> datetime:
     return monday
 
 
-NAMED_WINDOWS = {
-    "morning": ("07:00", "11:00"),
-    "上午": ("07:00", "11:00"),
-    "afternoon": ("13:00", "17:30"),
-    "下午": ("13:00", "17:30"),
-    "evening": ("18:00", "22:00"),
-    "晚上": ("18:00", "22:00"),
-    "night": ("21:00", "23:30"),
-}
-DEFAULT_OPEN_WINDOWS = (("10:00", "12:00"), ("16:00", "21:30"))
-QUIET_HOURS = ("23:00", "07:30")
-CATCH_MINUTES = 22
-SKIP_DAY_PERCENT = 18
-COOLDOWN_HOURS = {
-    "sent": 16,
-    "accepted": 24,
-    "completed": 24,
-    "rejected": 48,
-    "skip": 48,
-    "annoyed": 96,
-}
-
-
-def parse_hhmm(text: str) -> time:
-    return datetime.strptime(text.strip()[:5], "%H:%M").time()
-
-
-def time_in_span(now_t: time, start: time, end: time) -> bool:
-    if start <= end:
-        return start <= now_t < end
-    return now_t >= start or now_t < end
-
-
-def parse_stored_dt(text: str | None, tz) -> datetime | None:
-    if not text:
-        return None
-    dt = datetime.fromisoformat(text.strip())
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=tz)
-    return dt.astimezone(tz)
-
-
-def preferred_windows(text: str | None) -> tuple[tuple[str, str], ...]:
-    if not text or not text.strip():
-        return DEFAULT_OPEN_WINDOWS
-    raw = text.strip().lower()
-    if raw in NAMED_WINDOWS:
-        return (NAMED_WINDOWS[raw],)
-    if "-" in raw:
-        start, end = raw.split("-", 1)
-        return ((start.strip(), end.strip()),)
-    return DEFAULT_OPEN_WINDOWS
-
-
-def in_windows(now_t: time, windows: tuple[tuple[str, str], ...]) -> bool:
-    return any(time_in_span(now_t, parse_hhmm(a), parse_hhmm(b)) for a, b in windows)
-
-
-def blocking_anchor(conn: sqlite3.Connection, now: datetime) -> dict[str, Any] | None:
-    for row in conn.execute("SELECT * FROM life_anchors WHERE active = 1 AND blocks_nudge = 1"):
-        if not weekday_matches(row["weekdays"], now):
-            continue
-        if not row["start_time"] or not row["end_time"]:
-            continue
-        if time_in_span(now.time(), parse_hhmm(row["start_time"]), parse_hhmm(row["end_time"])):
-            return row_dict(row)
-    return None
-
-
-def sent_today(conn: sqlite3.Connection, now: datetime) -> bool:
-    for row in conn.execute(
-        "SELECT created_at FROM nudge_history WHERE outcome = 'sent' ORDER BY created_at DESC LIMIT 30"
-    ):
-        dt = parse_stored_dt(row["created_at"], now.tzinfo)
-        if dt and dt.date() == now.date():
-            return True
-    return False
-
-
-def last_nudge(conn: sqlite3.Connection, intention_id: str) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT * FROM nudge_history WHERE intention_id = ? ORDER BY created_at DESC LIMIT 1",
-        (intention_id,),
-    ).fetchone()
-
-
-def week_counts(conn: sqlite3.Connection, intention_id: str, now: datetime) -> dict[str, int]:
-    start = week_start(now).strftime("%Y-%m-%dT%H:%M:%S")
-    rows = conn.execute(
-        "SELECT outcome, COUNT(*) AS n FROM nudge_history "
-        "WHERE intention_id = ? AND created_at >= ? GROUP BY outcome",
-        (intention_id, start),
-    ).fetchall()
-    return {r["outcome"]: r["n"] for r in rows}
-
-
-def digest_int(*parts: str) -> int:
-    return int.from_bytes(hashlib.sha256("|".join(parts).encode()).digest()[:8], "big")
-
-
-def open_minutes(windows: tuple[tuple[str, str], ...]) -> list[int]:
-    q = quiet_hours()
-    quiet_s, quiet_e = parse_hhmm(q[0]), parse_hhmm(q[1])
-    minutes: list[int] = []
-    for total in range(24 * 60):
-        t = time(total // 60, total % 60)
-        if time_in_span(t, quiet_s, quiet_e):
-            continue
-        if in_windows(t, windows):
-            minutes.append(total)
-    return minutes
-
-
-def todays_slot(intention_id: str, now: datetime, windows: tuple[tuple[str, str], ...]) -> datetime | None:
-    minutes = open_minutes(windows)
-    if not minutes:
-        return None
-    pick = minutes[digest_int(now.date().isoformat(), intention_id, "slot") % len(minutes)]
-    return now.replace(hour=pick // 60, minute=pick % 60, second=0, microsecond=0)
-
-
-def skip_this_day(intention_id: str, now: datetime) -> bool:
-    return digest_int(now.date().isoformat(), intention_id, "skip") % 100 < SKIP_DAY_PERCENT
-
-
-def compose_nudge(intention: dict[str, Any]) -> str | None:
-    action = (intention.get("min_action") or "").strip()
-    if not action:
-        return None
-    if action.startswith("主人"):
-        return action
-    return f"主人，{action}"
-
-
-def decide_scan(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
-    q = quiet_hours()
-    if time_in_span(now.time(), parse_hhmm(q[0]), parse_hhmm(q[1])):
-        return {"action": "silent", "reason": "quiet_hours"}
-    blocked = blocking_anchor(conn, now)
-    if blocked:
-        return {"action": "silent", "reason": f"anchor:{blocked['title']}"}
-    if sent_today(conn, now):
-        return {"action": "silent", "reason": "already_sent_today"}
-
-    candidates: list[tuple[float, dict[str, Any]]] = []
-    for row in conn.execute("SELECT * FROM intentions WHERE status = 'open' AND nudge_ok = 1"):
-        item = row_dict(row)
-        last_done = parse_stored_dt(item["last_completed_at"], now.tzinfo)
-        if last_done and last_done.date() == now.date():
-            continue
-        counts = week_counts(conn, item["id"], now)
-        completed = counts.get("completed", 0)
-        if item["weekly_target"] and completed >= item["weekly_target"]:
-            continue
-        windows = preferred_windows(item["preferred_window"])
-        slot = todays_slot(item["id"], now, windows)
-        if slot is None:
-            continue
-        if not (slot <= now < slot + timedelta(minutes=CATCH_MINUTES)):
-            continue
-        if skip_this_day(item["id"], now):
-            continue
-        last = last_nudge(conn, item["id"])
-        if last:
-            last_at = parse_stored_dt(last["created_at"], now.tzinfo)
-            wait = COOLDOWN_HOURS.get(last["outcome"], 16)
-            if last_at and (now - last_at) < timedelta(hours=wait):
-                continue
-        message = compose_nudge(item)
-        if not message:
-            continue
-        item["week_completed"] = completed
-        item["message"] = message
-        candidates.append(((now - slot).total_seconds(), item))
-
-    if not candidates:
-        return {"action": "silent", "reason": "no_eligible_intention"}
-    candidates.sort(key=lambda pair: pair[0])
-    chosen = candidates[0][1]
-    return {
-        "action": "nudge",
-        "reason": "eligible",
-        "intention_id": chosen["id"],
-        "title": chosen["title"],
-        "min_action": chosen["min_action"],
-        "strength": chosen["strength"],
-        "message": chosen["message"],
-    }
-
-
-def resolve_now(value: str | None) -> datetime:
-    if not value:
-        return local_now()
-    stamp = parse_when(value)
-    tz = load_tz()
-    if stamp and "T" in stamp:
-        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=tz)
-    if stamp:
-        return datetime.strptime(stamp, "%Y-%m-%d").replace(tzinfo=tz)
-    return local_now()
-
-
-def cmd_scan(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
-    result = decide_scan(conn, resolve_now(args.at))
-    if result["action"] == "silent":
-        emit(args, result, f"silent  {result['reason']}")
-    else:
-        emit(args, result, f"nudge  {result['intention_id']}  {result['title']}\n{result['message']}")
-
-
-def cmd_maybe_send(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
-    result = decide_scan(conn, resolve_now(args.at))
-    if args.dry_run:
-        human = result.get("message") or f"silent  {result['reason']}"
-        emit(args, result, human)
-        return
-    if result["action"] != "nudge":
-        return
-    cmd = ["cc-connect", "send", "-m", result["message"]]
-    project = args.project or os.environ.get("CC_PROJECT")
-    session = args.session or os.environ.get("CC_SESSION_KEY")
-    if project:
-        cmd.extend(["-p", project])
-    if session:
-        cmd.extend(["-s", session])
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        err = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else str(exc)
-        raise SystemExit(f"发送失败: {err}") from exc
-    stamp = now_iso()
-    nudge_id = new_id("n")
-    conn.execute(
-        "INSERT INTO nudge_history(id, intention_id, reminder_id, outcome, note, created_at) "
-        "VALUES (?, ?, NULL, 'sent', ?, ?)",
-        (nudge_id, result["intention_id"], result["reason"], stamp),
-    )
-    conn.execute(
-        "UPDATE intentions SET last_mentioned_at = ?, updated_at = ? WHERE id = ?",
-        (stamp, stamp, result["intention_id"]),
-    )
-    conn.commit()
-
-
 def cmd_today(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
     day = parse_date(args.date)
     day_key = day.strftime("%Y-%m-%d")
@@ -2032,14 +1779,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     t = sub.add_parser("today", help="今天的背景 / 日历 / 必做 / 截止 / 意愿")
     t.add_argument("--date", help="YYYY-MM-DD，默认今天")
-
-    sc = sub.add_parser("scan", help="判断现在该不该轻轻叫一声")
-    sc.add_argument("--at", help="假装当前时间，如 2026-08-26T20:00")
-    ms = sub.add_parser("maybe-send", help="该叫才发；不该叫就完全静默")
-    ms.add_argument("--at", help="假装当前时间")
-    ms.add_argument("--dry-run", action="store_true")
-    ms.add_argument("--project")
-    ms.add_argument("--session")
 
     ar = sub.add_parser("add-reminder", help="记下一条硬提醒")
     ar.add_argument("--title", required=True)
@@ -2187,8 +1926,6 @@ COMMANDS = {
     "init": cmd_init,
     "status": cmd_status,
     "today": cmd_today,
-    "scan": cmd_scan,
-    "maybe-send": cmd_maybe_send,
     "add-reminder": cmd_add_reminder,
     "set-reminder": cmd_set_reminder,
     "list-reminders": cmd_list_reminders,
